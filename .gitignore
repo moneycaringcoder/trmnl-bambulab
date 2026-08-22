@@ -1,0 +1,32 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+*.pem
+*.key
+*.p12
+
+# TRMNL local credentials and builds
+.trmnlp.yml
+_build/
+
+# JavaScript / TypeScript
+node_modules/
+coverage/
+dist/
+.wrangler/
+
+# Unsanitized captures and local state
+captures/
+raw-telemetry/
+*.pcap
+*.pcapng
+*.log
+*.sqlite*
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/

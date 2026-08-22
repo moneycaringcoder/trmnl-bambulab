@@ -2,7 +2,7 @@
 
 ## Product sentence
 
-Show the state of an A1 or A1 mini print at a glance on TRMNL without exposing the printer or granting remote control.
+Show the richest reliable A1 or A1 mini status on TRMNL by fusing direct printer Wi-Fi telemetry with optional Bambu Cloud discovery, remote fallback, and project metadata.
 
 ## Proposed repository layout
 
@@ -13,12 +13,20 @@ Show the state of an A1 or A1 mini print at a glance on TRMNL without exposing t
 ├── docs/
 ├── bridge/
 │   ├── src/
-│   │   ├── bambu/
+│   │   ├── providers/
+│   │   │   ├── local-mqtt/
+│   │   │   ├── bambu-cloud/
+│   │   │   └── home-assistant/        # later
+│   │   ├── coordinator/
 │   │   ├── normalize/
+│   │   ├── secrets/
 │   │   ├── push/
 │   │   └── index.ts
 │   ├── test/
 │   ├── fixtures/
+│   │   ├── local/
+│   │   ├── cloud/
+│   │   └── merged/
 │   ├── package.json
 │   └── tsconfig.json
 ├── plugin/
@@ -34,26 +42,42 @@ Show the state of an A1 or A1 mini print at a glance on TRMNL without exposing t
     └── bridge.env.example
 ```
 
-Do not create real `.env`, `.dev.vars`, API-key, access-code, or webhook files in the repository.
+Do not create real `.env`, `.dev.vars`, API-key, access-code, cloud-token, password, or webhook files in the repository.
 
-## Phase 0 — fixtures and spike
+## Phase 0 — protocol and authentication spikes
 
-1. Choose one maintained MQTT client with TLS/SNI support.
-2. Connect read-only to one A1 using a disposable local spike.
+### Direct LAN
+
+1. Choose a maintained MQTT client with TLS/SNI support.
+2. Connect read-only to A1 with a disposable spike.
 3. Capture sanitized reports for the fixture matrix in `BAMBU-PROTOCOL.md`.
 4. Repeat on A1 mini.
-5. Confirm actual report topic, TLS identity behavior, state tokens, progress units, remaining-time units, and whether reports are partial.
-6. Compare normalized values with Bambu Studio and, if available, ha-bambulab.
-7. Delete the spike and all unsanitized captures.
+5. Confirm report topic, TLS identity, state tokens, units, and partial-report behavior.
+6. Compare values with Bambu Studio and, if available, ha-bambulab.
 
-Gate: no production implementation until both printer models have useful sanitized fixtures and no credential leakage.
+### Bambu Cloud
 
-## Phase 1 — normalization library
+1. Build a separate disposable cloud spike.
+2. Start token-first; do not persist account password.
+3. Validate device discovery, regional cloud MQTT, and minimum metadata endpoints.
+4. Exercise verification-code/2FA and token-expiry behavior.
+5. Capture only sanitized response shapes.
+6. Confirm which fields exist only in cloud data: history, project/task metadata, cover, weight, length, bed type.
+7. Measure API drift/failure behavior without bypass loops.
 
-Implement pure functions first:
+Delete spikes and all unsanitized captures.
 
+Gate: useful sanitized A1/A1 mini local fixtures, sanitized cloud fixtures, documented authentication behavior, and no credential leakage.
+
+## Phase 1 — provider contracts and normalization
+
+Implement pure contracts/functions first:
+
+- `LocalMqttProvider`
+- `BambuCloudProvider`
 - `mergeReport(previous, patch)`
-- `normalizePrinterState(cache, connectionState, now)`
+- `mergeObservations(observations, now)`
+- `normalizePrinterState(merged, now)`
 - `redactForLog(value)`
 - `buildWebhookPayload(snapshot)`
 - `measurePayloadBytes(payload)`
@@ -63,94 +87,137 @@ Tests:
 - partial nested updates do not erase siblings
 - malformed numeric strings become `null`
 - unknown state is preserved
-- HMS and `print_error` coexist
-- stale/offline timing
+- local realtime data beats older cloud data
+- cloud metadata enriches without replacing local telemetry
+- cloud-only and local-only snapshots remain complete
+- provider conflicts and staleness
+- HMS and `print_error` coexist and deduplicate
 - external spool and AMS Lite selection
+- cover URL allowlisting/expiry
 - job-name privacy switch
-- serial/IP/access-code/token pattern redaction
-- JSON body remains below 2 kB for worst-case bounded alerts
+- serial/IP/access-code/password/token pattern redaction
+- worst-case body stays below 2 kB
 
-Gate: deterministic snapshots from every fixture.
+Gate: deterministic snapshots for local-only, cloud-only, and hybrid fixtures.
 
-## Phase 2 — local bridge
+## Phase 2 — provider implementations
+
+### Local provider
+
+- verified TLS connection and printer identity
+- passive report subscription
+- partial state cache
+- reconnect with bounded backoff/jitter
+- stale detection
+- optional one-shot full-status request behind tested capability
+
+### Cloud provider
+
+- encrypted token storage abstraction
+- optional interactive login with transient password/code
+- account-region handling
+- device discovery
+- cloud MQTT telemetry
+- minimum HTTP metadata retrieval
+- conservative cache/expiry
+- explicit `reauth_required`
+- bounded retries; no CAPTCHA/Cloudflare bypass loops
+
+Gate: each provider survives its own outage/restart without affecting the other.
+
+## Phase 3 — coordinator and push scheduler
 
 Implement:
 
-- validated TLS connection
-- reconnect with bounded backoff and jitter
-- passive report subscription
-- optional one-shot full-status request behind a tested model capability
-- state cache
+- capability detection
+- per-field provenance and observation time
+- deterministic precedence/hysteresis
+- multi-printer identity mapping
+- normalized state cache
 - push candidate generation
 - coalescing/token bucket
 - TRMNL webhook client
-- structured logs with no secrets
+- structured redacted logs
 - graceful shutdown
 
-Persistence is optional for v1. If added, store only the latest normalized snapshot and scheduler timestamps, not raw MQTT or secrets.
+Persistence may store the latest normalized snapshot, provider metadata timestamps, and encrypted token reference. Never persist raw MQTT, account password, verification code, or unredacted HTTP response.
 
-Gate: bridge survives printer reboot, network interruption, its own restart, webhook timeout, 429, and 5xx without hot loops or duplicate storms.
+Gate: coordinator survives local outage, cloud outage, token expiry, provider disagreement, printer reboot, bridge restart, webhook timeout, 429, and 5xx without stale-state lies or retry storms.
 
-## Phase 3 — TRMNL templates
+## Phase 4 — TRMNL templates
 
-1. Scaffold the plugin with `trmnlp` in `plugin/` without overwriting repository docs.
-2. Use fixture JSON through local config.
+1. Scaffold under `plugin/` without overwriting repository docs.
+2. Use merged fixture JSON in local preview.
 3. Build Shared components.
 4. Implement full view.
-5. Implement both half views independently; do not merely scale the full view.
+5. Implement both half views independently.
 6. Implement quadrant.
-7. Render idle, preparing, printing, paused, finished, failed, stale, offline, and alert states.
-8. Build PNGs and visually inspect 1-bit output.
+7. Render hybrid, local, cloud-degraded, idle, preparing, printing, paused, finished, failed, stale, offline, and alert states.
+8. Add optional project cover image with image-free fallback.
+9. Build PNGs and inspect 1-bit output.
 
 Gate: `trmnlp lint` passes and every state fits every viewport without overflow.
 
-## Phase 4 — end-to-end
+## Phase 5 — end-to-end
 
 1. Human creates a TRMNL Private Plugin using Webhook strategy.
-2. Human supplies the generated webhook URL through local secret configuration.
-3. Bridge sends a synthetic fixture snapshot.
-4. Verify the latest render in TRMNL before connecting a real printer.
-5. Connect A1, then A1 mini.
-6. Verify event coalescing and hourly request ceiling over a complete print.
-7. Verify device behavior, remembering that TRMNL screen display follows its pull/playlist schedule rather than instant push.[4]
+2. Human supplies webhook URL through local secret configuration.
+3. Bridge sends synthetic merged fixture.
+4. Verify latest render before real credentials/printer.
+5. Test direct LAN on A1 and A1 mini.
+6. Test cloud-only from a host without LAN reachability.
+7. Test hybrid and deliberately interrupt each provider.
+8. Verify hourly request ceiling over a complete print.
+9. Verify device behavior, remembering TRMNL display follows pull/playlist schedule rather than instant push.[4]
 
-Gate: no secret appears in Git, logs, process arguments, screenshots, TRMNL merge variables, or test artifacts.
+Gate: no secret appears in Git, logs, process arguments, screenshots, TRMNL variables, or test artifacts.
 
-## Phase 5 — hardening and distribution
+## Phase 6 — hardening and distribution
 
-- package bridge as a small container and a plain Node service
+- container and plain Node service
+- OS/keyring-backed token storage where possible
+- setup UI/CLI for hybrid, local-only, and cloud-only
 - health/readiness endpoint bound to loopback only, if needed
-- documented upgrades and rollback
+- documented upgrades, reauthentication, and rollback
 - signed/reproducible release artifacts
 - configuration migration tests
-- multi-printer design only after one-printer reliability
-- evaluate a Home Assistant adapter
-- evaluate public/unlisted TRMNL Recipe publication
+- multi-printer overview
+- Home Assistant provider evaluation
+- official Bambu Local Server SDK provider evaluation
+- public/unlisted TRMNL Recipe evaluation
 
-## Acceptance criteria for v1
+## Acceptance criteria for first excellent release
 
-- A1 and A1 mini both verified.
-- Read-only operation; no control publish path exists.
-- Verified TLS; no insecure bypass default.
-- Full/half/quadrant render states complete.
-- Progress, remaining time, layer, temperatures, filament, status, freshness, HMS, and print error represented.
+- A1 and A1 mini verified.
+- Hybrid recommended and verified.
+- Direct-LAN mode works without Bambu Cloud.
+- Cloud-only mode works remotely and is clearly labelled experimental.
+- Local telemetry automatically wins when fresher.
+- Cloud enriches discovery/history/project metadata and provides fallback.
+- Token-first setup; persisted password and verification code prohibited.
+- Cloud expiry becomes explicit `reauth_required` without breaking local mode.
+- Verified local TLS; no insecure bypass default.
+- Full/half/quadrant states complete.
+- Progress, remaining time, layer, temperatures, filament, status, freshness, HMS, print error, connection mode, and optional project metadata represented.
 - Unknown/unsupported values render honestly.
 - Worst-case webhook body under 2 kB.
 - Hard limit below 12 webhook calls/hour.
-- No public inbound service required.
-- No Bambu Cloud credentials required.
+- No public inbound home service required.
 - Clean secret scan and clean repository status.
 
-## Open questions to answer with hardware
+## Open questions to answer with hardware/accounts
 
-- Does current A1 firmware emit full or partial status reports?
-- Does A1 mini differ in stage tokens or AMS Lite data shape?
-- Is one `pushall` request accepted without Developer Mode on current firmware?
-- Which exact TLS SNI value and CA chain work across both printers?
-- How quickly does each printer report offline versus a dead TCP session?
-- Are remaining-time values consistently minutes?
-- Which fields disappear immediately after completion?
-- How many HMS entries can be active in realistic conditions while staying under payload budget?
+- Does current A1 firmware emit full or partial local reports?
+- Does A1 mini differ in stage tokens or AMS Lite shape?
+- Is one `pushall` request accepted without Developer Mode?
+- Which TLS SNI value and CA chain work across both printers?
+- Which cloud region/broker applies to the test account?
+- Does current cloud MQTT expose identical telemetry shape?
+- Which HTTP endpoint set remains stable enough for discovery and enrichment?
+- What is the safest user-friendly access-token acquisition and reauthentication flow?
+- Which cloud fields disappear or lag after completion?
+- How should cover URLs be cached before signed URLs expire?
+- How quickly should hybrid mode fail over and fail back without flapping?
 
 ## Sources
 

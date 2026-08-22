@@ -46,6 +46,25 @@ Implementation requirements:
 - Fail closed on certificate errors.
 - Never ship an insecure fallback as the default.
 
+## Cloud connection
+
+Cloud support is useful for remote fallback, account-bound device discovery, print history, project metadata, cover images, weight/length, and bed type. It is not a supported public consumer API contract.
+
+Community-observed cloud behavior includes bearer-token HTTP requests, account device listing, print task/project endpoints, regional cloud MQTT brokers, and cloud MQTT authentication derived from account identity plus access token.[15][22]
+
+Implementation rules:
+
+- Keep Cloud in a separate adapter from local MQTT.
+- Prefer token-first setup.
+- If interactive login is supported, handle verification-code/2FA flow and discard the password/code immediately after token acquisition.
+- Encrypt the token at rest.
+- Make token expiry and `reauth_required` explicit; community notes report ineffective refresh-token behavior.[22]
+- Fetch only minimum required metadata at low frequency.
+- Never let stale Cloud observations overwrite fresher local state.
+- Never require Cloud for direct LAN monitoring.
+
+The ha-bambulab integration demonstrates practical cloud, local, and hybrid operation. Its docs describe cloud credentials as the richest setup and optional direct IP as the more efficient/reliable source for printer sensors and A1/P1 chamber images.[18][19]
+
 ## Report model
 
 Messages are JSON objects. The report topic can contain printer status and command responses.[15]
@@ -152,3 +171,4 @@ It is not a normative protocol specification. Its release notes and entities sho
 [18] https://docs.page/greghesp/ha-bambulab/setup — ha-bambulab Setup
 [19] https://docs.page/greghesp/ha-bambulab/entities — ha-bambulab Entities
 [20] https://docs.page/greghesp/ha-bambulab/device-triggers — ha-bambulab Device Triggers
+[22] https://github.com/Doridian/OpenBambuAPI/blob/main/cloud-http.md — OpenBambuAPI Cloud HTTP protocol notes

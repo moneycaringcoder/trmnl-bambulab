@@ -35,7 +35,8 @@ Bambu's public docs establish supported connectivity and policy, but not the com
 
 ## Community protocol references
 
-- [OpenBambuAPI MQTT](https://github.com/Doridian/OpenBambuAPI/blob/main/mqtt.md) — local broker parameters, topics, report examples, commands, and status fields.[15]
+- [OpenBambuAPI Cloud HTTP](https://github.com/Doridian/OpenBambuAPI/blob/main/cloud-http.md) — observed bearer auth, devices, tasks, projects, cover URLs, cloud MQTT identity, and token caveats.[22]
+- [OpenBambuAPI MQTT](https://github.com/Doridian/OpenBambuAPI/blob/main/mqtt.md) — local and cloud broker parameters, topics, report examples, commands, and status fields.[15]
 - [OpenBambuAPI TLS](https://github.com/Doridian/OpenBambuAPI/blob/main/tls.md) — Bambu CA, printer-serial certificate identity, SNI, and certificate-validation pitfalls.[16]
 - [ha-bambulab overview](https://docs.page/greghesp/ha-bambulab) — current authorization impact on reads versus writes.[17]
 - [ha-bambulab setup](https://docs.page/greghesp/ha-bambulab/setup) — cloud, hybrid, and LAN configuration requirements.[18]
@@ -52,6 +53,8 @@ Community sources are implementation clues, not guarantees. Pin the exact revisi
 | Which local port and transport? | Bambu ports/security.[13][14] |
 | What MQTT credentials/topics are observed? | OpenBambuAPI MQTT.[15] |
 | How should TLS identity be verified? | OpenBambuAPI TLS.[16] |
+| How should hybrid LAN + Cloud behave? | Connection modes + ha-bambulab setup.[18] |
+| What Cloud capabilities are observed? | OpenBambuAPI Cloud HTTP.[22] |
 | Which status fields matter to users? | ha-bambulab entities.[19] |
 | Why surface both HMS and print error? | OpenBambuAPI + ha-bambulab triggers.[15][20] |
 | How does data reach TRMNL? | Private Plugins + Webhooks.[2][3] |
@@ -82,3 +85,4 @@ Community sources are implementation clues, not guarantees. Pin the exact revisi
 [19] https://docs.page/greghesp/ha-bambulab/entities — ha-bambulab Entities
 [20] https://docs.page/greghesp/ha-bambulab/device-triggers — ha-bambulab Device Triggers
 [21] https://github.com/bambulab/BambuStudio — Bambu Studio source repository
+[22] https://github.com/Doridian/OpenBambuAPI/blob/main/cloud-http.md — OpenBambuAPI Cloud HTTP protocol notes

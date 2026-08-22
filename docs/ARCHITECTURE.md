@@ -4,82 +4,128 @@ Research date: 2026-08-22.
 
 ## Decision
 
-Build v1 as a local, read-only telemetry bridge feeding a TRMNL Private Plugin webhook.
+Build a capability-driven hybrid integration. Use direct printer Wi-Fi/LAN MQTT for the freshest telemetry whenever reachable, and optionally connect to Bambu Cloud for remote fallback, account device discovery, print-history metadata, cover art, weight/length, and other cloud-only enrichment.
 
 ```text
-Bambu A1 / A1 mini
-  MQTT over TLS :8883
-          |
-          v
-Local bridge (Node.js/TypeScript)
-  - authenticate with LAN access code
-  - merge partial reports
-  - normalize + redact
-  - coalesce + rate-limit
-          |
-          | HTTPS POST, compact JSON
-          v
-TRMNL Private Plugin webhook
-          |
-          v
-Liquid + TRMNL Framework render
-          |
-          v
-TRMNL e-paper device
+                         Bambu Cloud
+                    HTTP API + cloud MQTT
+                              |
+                              v
+Bambu A1 / A1 mini      Provider coordinator
+local MQTT/TLS :8883 -> - capability detection
+                              - freshness/provenance
+                              - deterministic field merge
+                              - normalization/redaction
+                              - coalescing/rate limits
+                                      |
+                                      | HTTPS POST, compact JSON
+                                      v
+                           TRMNL Private Plugin
+                                      |
+                                      v
+                         Liquid + Framework render
+                                      |
+                                      v
+                           TRMNL e-paper device
 ```
 
 Bambu documents LAN MQTT on TCP 8883 and TLS/access-code protection for local printer communication.[13][14]
 
+Bambu does not publish a general public consumer Cloud API contract. Current cloud HTTP/MQTT behavior is reverse-engineered and must remain an optional, isolated adapter with graceful degradation.[15][18][22]
+
 TRMNL webhook plugins accept merge variables pushed to a per-plugin URL and render them through the hosted markup engine.[2][3]
 
-## Why this topology
+## Product modes
 
-### Local printer connection
+### Hybrid — preferred
 
-The printer is a LAN resource. A cloud-hosted function cannot directly connect to a private printer address. A local bridge can subscribe without exposing MQTT, FTP, camera, Home Assistant, or the printer itself to the public Internet.
+Run both providers when the printer is locally reachable and the user opts into Bambu Cloud.
 
-Bambu's newer authorization system restricts control operations, but Bambu explicitly lists MQTT status pushes, including Home Assistant-style monitoring, as unaffected. Developer Mode is needed for unrestricted control and disables Bambu Cloud; v1 does not need or request that trade-off.[11]
+- Local MQTT is authoritative for live printer state, temperatures, layers, progress, stage, AMS state, and errors.
+- Cloud enriches the snapshot with account-bound device discovery and print-history metadata.
+- Cloud becomes a telemetry fallback when the local connection is unavailable.
+- Every normalized field carries internal provenance and observation time so merge behavior is deterministic.
 
-### Direct push to TRMNL
+The mature ha-bambulab integration independently uses this pattern: cloud credentials provide the broadest metadata, while an optional local printer IP supplies more efficient and reliable sensor data and A1/P1 chamber-image support.[18][19]
 
-The bridge already receives events, so TRMNL's Webhook strategy is a natural fit. It avoids a public polling API and any hosted state database. The webhook UUID is an outbound credential held only by the bridge.
+### Direct LAN
 
-TRMNL's standard webhook budget is 12 requests/hour and 2 kB per payload; TRMNL+ raises those limits to 30/hour and 5 kB.[3] The bridge therefore must not forward MQTT messages one-for-one.
+Use printer host, serial, and LAN access code. Works without Bambu Cloud and is the privacy-preserving baseline. LAN MQTT status monitoring remains available under Bambu's newer authorization model; unrestricted control is a separate Developer Mode concern.[11][12]
 
-### Read-only first
+### Cloud-only
 
-A passive e-paper dashboard does not need machine control. Excluding commands removes the highest-risk paths: stopping prints, moving axes, changing temperatures, loading filament, or starting files. It also avoids dependence on Developer Mode and authorization behavior that varies by model and firmware.[11][17]
+Useful when the bridge is away from the printer LAN or local connectivity is temporarily unavailable. It must be labelled experimental because authentication, endpoints, token behavior, and cloud MQTT details are not a supported public API contract.[15][22]
+
+### Home Assistant adapter
+
+Optional later provider. It can reuse a deployed ha-bambulab integration and its mature entity model, but must not be required for normal operation.[18][19]
+
+## Why the coordinator matters
+
+Without a coordinator, hybrid connections can flap between conflicting values or regress to stale cloud data. The coordinator owns:
+
+- provider health and capability discovery
+- per-field observation timestamps
+- source precedence
+- stale thresholds
+- conflict logging without secret/data leakage
+- normalized schema versioning
+- bounded fallback behavior
+
+Recommended precedence:
+
+| Field class | Primary | Fallback/enrichment |
+| --- | --- | --- |
+| live connectivity and state | local MQTT | cloud MQTT |
+| progress, layer, remaining time, stage | local MQTT | cloud MQTT |
+| temperatures, fans, AMS/filament | local MQTT | cloud MQTT |
+| HMS and `print_error` | union of fresh providers | deduplicate by code |
+| friendly device/account naming | explicit local config | cloud device metadata |
+| cover image, weight, length, bed type, history | cloud HTTP | local print-file parsing later |
+| bridge freshness | coordinator clock | never remote timestamp alone |
+
+Never let older cloud data overwrite fresher local data. Never infer healthy from one provider if another fresh provider reports an error.
 
 ## Components
 
-### 1. Bambu adapter
-
-Responsibilities:
+### 1. Local provider
 
 - Establish verified MQTT-over-TLS connection to the configured printer.
-- Subscribe only to the report topic.
-- Parse JSON defensively.
-- Merge partial patches into cached state.
-- Emit normalized snapshots, not raw MQTT.
-- Mark data stale/offline after configurable deadlines.
+- Subscribe to the report topic.
+- Parse JSON defensively and merge partial patches.
+- Emit provider observations, not TRMNL payloads.
+- Mark data stale/offline after tested deadlines.
+- Keep LAN access code, serial, IP, and raw reports out of logs.
 
-It must not expose the access code, serial, IP, raw report, or model/project filename in logs by default.
+### 2. Cloud provider
 
-### 2. Normalizer
+- Support token-first configuration.
+- If interactive login is implemented, handle verification-code/2FA flow and discard the password after obtaining a token.
+- Discover account-bound devices and select by stable device identity.
+- Subscribe to cloud MQTT for remote telemetry when available.
+- Query only the minimum HTTP endpoints needed for enrichment.
+- Cache metadata with conservative expiry and backoff.
+- Stop cleanly on authentication failure instead of retrying credentials aggressively.
 
-The normalizer is a compatibility boundary. Templates consume one stable schema even when Bambu firmware changes field names, report density, or state codes.
+OpenBambuAPI documents observed bearer-token HTTP auth, device listing, print tasks/projects, cover URLs, and cloud MQTT identity derivation, but also notes unreliable refresh-token behavior. Treat all of it as volatile.[22]
+
+### 3. Provider coordinator and normalizer
+
+Templates consume one stable schema regardless of provider mix.
 
 Rules:
 
 - Keep schema versioned with `schema_version`.
+- Track source and observation time internally for every merged field.
 - Convert temperatures to numeric Celsius values.
 - Keep remaining time in integer minutes.
-- Keep progress in integer percent, clamped only after type validation.
-- Surface both HMS and `print_error`; they are independent channels in community protocol observations.[15]
+- Keep progress in integer percent after validation.
+- Surface both HMS and `print_error`; they are independent channels.[15]
 - Represent unsupported or absent values as `null`, not fabricated zeros.
-- Preserve raw unknown state/error tokens in explicitly named fields.
+- Preserve unknown state/error tokens in explicitly named fields.
+- Export only coarse connection mode (`hybrid`, `local`, `cloud`, `offline`), never provider credentials or identifiers.
 
-### 3. Push scheduler
+### 4. Push scheduler
 
 Recommended default policy:
 
@@ -88,57 +134,68 @@ Recommended default policy:
 - Periodic candidate every 10 minutes while printing.
 - Periodic heartbeat every 30 minutes while idle.
 - Coalesce candidates for a short debounce window.
-- Enforce a hard token bucket below the account limit; queue only the newest snapshot.
+- Enforce a hard token bucket below the TRMNL account limit; queue only the newest snapshot.
 - Retry transient failures with bounded exponential backoff and jitter.
-- Honor `429`; never retry fast enough to amplify rate limiting.
+- Honor `429`; never amplify rate limiting.
 
-The device itself requests screens and may not display a pushed update immediately. TRMNL refresh timing is pull-based and constrained by device, playlist, plugin, and account settings.[4]
+TRMNL devices request screens and may not display a pushed update immediately. Refresh timing is pull-based and constrained by device, playlist, plugin, and account settings.[4]
 
-### 4. TRMNL renderer
+### 5. TRMNL renderer
 
-One Private Plugin instance uses Webhook strategy. The templates read the normalized schema and provide all four TRMNL layouts. Shared markup owns reusable Liquid components and styles.
+One Private Plugin instance uses Webhook strategy. Templates read the normalized schema and provide full, half-horizontal, half-vertical, and quadrant layouts. Shared markup owns reusable Liquid components and styles.
 
-## Secrets
+## Secret model
 
-Local-only configuration:
+Local provider:
 
 - `BAMBU_PRINTER_HOST`
 - `BAMBU_PRINTER_SERIAL`
 - `BAMBU_ACCESS_CODE`
+
+Cloud provider, optional:
+
+- encrypted Bambu Cloud access token
+- account region
+- optional account identifier for reauthentication UX
+- password and verification code must be transient, never persisted
+
+TRMNL:
+
 - `TRMNL_WEBHOOK_URL`
-- optional friendly display name
 
 Rules:
 
-- Load from environment or a permission-restricted local secrets file.
-- Never put secrets in sample config, fixtures, screenshots, logs, errors, telemetry, GitHub Actions, or TRMNL merge variables.
+- Load secrets from a permission-restricted local secret store.
+- Never put secrets in sample config, fixtures, screenshots, logs, errors, telemetry, process arguments, GitHub Actions, or TRMNL merge variables.
 - Treat the TRMNL webhook URL as a credential because it contains the plugin-setting UUID.[3]
-- Keep the Bambu LAN access code on the LAN bridge only.
+- Never send Bambu Cloud tokens or LAN credentials to an author-controlled relay.
+- Cloud support must be optional; local mode must keep working during cloud outages or API drift.
 
-## Rejected v1 alternatives
+## Scope boundaries
 
-### Bambu Cloud API from a hosted worker
+### Monitoring and enrichment
 
-Rejected. The public integration path is Bambu Connect/Local Server rather than a stable public telemetry API for this use case. Cloud-login reverse engineering would add account credentials, 2FA/session churn, remote dependency, and avoidable privacy risk.[11]
+In scope: best available status, progress, remaining time, layer, stage, temperatures, AMS/filament, errors, connectivity, cloud-derived cover art/history metadata, and multi-printer discovery.
 
-### TRMNL polling a Home Assistant endpoint
+### Printer controls
 
-Deferred. It can reuse the mature ha-bambulab entity model, but it requires a public authenticated Home Assistant-facing endpoint or another relay. The direct bridge has fewer dependencies. A Home Assistant adapter remains a useful later option because the integration exposes progress, layers, temperatures, AMS state, connectivity, HMS errors, and print errors.[18][19]
+Still out of scope for the TRMNL display path. E-paper refresh is asynchronous and unsuitable for safety-critical control feedback. The provider architecture may discover capabilities, but no pause/resume/stop/motion/temperature/print-start operation should be exposed without a separate design and explicit approval.[4][11]
 
-### Camera images
+### Live camera
 
-Rejected for v1. Camera availability differs by model and mode, increases privacy exposure and bandwidth, and adds image processing that does not improve the core glanceable status use case.[18][19]
+Deferred. A static cloud cover image or project thumbnail is useful on e-paper; a live camera feed adds privacy, bandwidth, model-specific behavior, and poor fit for a slow-refresh display.[18][19]
 
-### Printer controls from TRMNL
+## Official future path
 
-Rejected. E-paper is the display, not a safety-critical control surface. TRMNL refresh is asynchronous, so command feedback would be poor even if controls were technically possible.[4][11]
+Bambu's Local Server SDK offers supported printer management, monitoring, control, file, and task APIs, but access requires application and platform support remains constrained. Keep an adapter seam for it; do not block v1 on SDK approval.[11]
 
 ## Future extension seams
 
-- Multiple printers: array of normalized printer snapshots plus selection/summary views.
-- Home Assistant adapter: read existing entities instead of direct MQTT.
-- Optional hosted relay: only if recipe distribution needs installer-specific endpoints.
-- Public Recipe: after local setup is simple, all layouts pass, and secrets remain user-owned.
+- Multi-printer overview and per-printer views.
+- Home Assistant provider.
+- Official Bambu Local Server provider.
+- Optional hosted state relay only if public Recipe distribution demands it.
+- Public Recipe after setup is simple, all layouts pass, and user credentials remain user-owned.
 
 ## Sources
 
@@ -146,9 +203,10 @@ Rejected. E-paper is the display, not a safety-critical control surface. TRMNL r
 [3] https://docs.usetrmnl.com/go/private-plugins/webhooks.md — TRMNL Private Plugin Webhooks
 [4] https://help.usetrmnl.com/en/articles/10113695-how-refresh-rates-work — TRMNL Refresh Rates
 [11] https://wiki.bambulab.com/en/software/third-party-integration — Bambu Lab Third-party Integration
+[12] https://wiki.bambulab.com/en/knowledge-sharing/enable-lan-mode — Bambu Lab LAN Mode
 [13] https://wiki.bambulab.com/en/general/bbl-security — Bambu Lab Security
 [14] https://wiki.bambulab.com/en/general/printer-network-ports — Bambu Lab Printer Network Ports
 [15] https://github.com/Doridian/OpenBambuAPI/blob/main/mqtt.md — OpenBambuAPI MQTT protocol notes
-[17] https://docs.page/greghesp/ha-bambulab — ha-bambulab Integration Overview
 [18] https://docs.page/greghesp/ha-bambulab/setup — ha-bambulab Setup
 [19] https://docs.page/greghesp/ha-bambulab/entities — ha-bambulab Entities
+[22] https://github.com/Doridian/OpenBambuAPI/blob/main/cloud-http.md — OpenBambuAPI Cloud HTTP protocol notes

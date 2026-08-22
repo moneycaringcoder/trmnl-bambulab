@@ -30,6 +30,12 @@ Example request shape:
 {
   "merge_variables": {
     "schema_version": 1,
+    "connection": {
+      "mode": "hybrid",
+      "local": "connected",
+      "cloud": "connected",
+      "cloud_metadata_stale": false
+    },
     "printer": {
       "name": "Workshop A1",
       "model": "A1",
@@ -57,6 +63,12 @@ Example request shape:
       "type": "PLA",
       "color": "#E5E5E5"
     },
+    "project": {
+      "cover_url": null,
+      "weight_grams": null,
+      "length_mm": null,
+      "bed_type": null
+    },
     "alerts": {
       "active": false,
       "hms": [],
@@ -76,10 +88,11 @@ Do not include:
 - printer serial
 - printer IP
 - LAN access code
-- Bambu account identity or token
+- Bambu account email, password, verification code, or access token
 - TRMNL webhook UUID
 - task/project/profile IDs
-- raw URLs
+- raw provider URLs other than an explicitly allowlisted, short-lived project cover URL
+- provider provenance details beyond safe coarse connection mode
 - full raw MQTT
 - camera images
 
@@ -136,6 +149,9 @@ Suggested information density:
 - progress percentage
 - remaining time
 - alert marker
+- coarse connection mode when degraded from hybrid
+
+Cloud-derived project cover art may be used only after URL allowlisting, privacy review, expiry handling, and 1-bit rendering tests. The display must remain useful when the image is absent or stale.
 
 Idle views should not show fake zeros. Replace print metrics with readiness, temperatures, filament, and last update. Offline/stale views must be visually distinct from idle.
 

@@ -99,8 +99,12 @@ describe("parseReport", () => {
     ).toEqual({ job: { state: "printing", rawState: "RUNNING" } });
   });
 
-  it("accepts an almost-empty P1 report without inventing fields", () => {
-    expect(parseReport({ print: {} })).toEqual({});
+  // A report that yielded nothing is not an observation. Recording one would
+  // register a printer the coordinator has learned nothing about, which then
+  // reads on the display as a printer whose data has gone stale.
+  it("returns null for a report that told us nothing", () => {
+    expect(parseReport({ print: {} })).toBeNull();
+    expect(parseReport({ print: { unrecognized_field: 1 } })).toBeNull();
   });
 
   it("returns null when there is no usable print object", () => {

@@ -158,5 +158,10 @@ export function parseReport(
 
   // Missing delta fields stay absent. Writing null here would erase a value
   // learned from an earlier P1 report, which is different from not observing it.
-  return fields;
+  //
+  // A report that yielded nothing at all is not an observation. Recording one
+  // would register a printer the coordinator has learned nothing about, which
+  // then reads as a printer whose data is stale. Whether the printer is alive
+  // is a question HTTP answers.
+  return Object.keys(fields).length === 0 ? null : fields;
 }

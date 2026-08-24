@@ -1,0 +1,96 @@
+{% comment %}
+Full screen, 800x480.
+
+One structure serves one, two and three printers, and only the headline size
+changes. The alternative was a separate hero layout for the single-printer case,
+which is how the first attempt clipped a 170px glyph inside a 143px flex row:
+`.layout` is `overflow: hidden`, and `layout--stretch` divides the height
+equally whether or not the contents fit.
+
+The content area is about 430px once the title bar is out. So the headline is
+220px for one printer, 74px for two and 58px for three, each leaving room for
+the rail and the supporting figures.
+
+Every metric is guarded. An absent value leaves nothing behind rather than
+becoming a zero, which is why an idle printer has no progress rail at all
+rather than an empty one.
+{% endcomment %}
+
+{% case printers.size %}
+  {% when 1 %}{% assign headline = "value--giga" %}
+  {% when 2 %}{% assign headline = "value--xlarge" %}
+  {% else %}{% assign headline = "value--large" %}
+{% endcase %}
+
+<div class="layout layout--col layout--stretch">
+  {% for printer in printers %}
+    {% comment %}
+      A `.list` per printer, not a `.layout`. The framework gives `.layout`
+      `container-type: size`, so its own contents do not contribute to its
+      height and a `.layout` nothing is stretching collapses to nothing.
+    {% endcomment %}
+    {% assign unreadable = false %}
+    {% if printer.stale or printer.state == "offline" or printer.state == "unknown" %}
+      {% assign unreadable = true %}
+    {% endif %}
+
+    <div class="list">
+      <div class="item">
+        <div class="content">
+          {% if unreadable %}
+            {% comment %}
+              Deliberately no number. A stale reading is the bridge's fault
+              rather than the printer's, and showing the last known figures at
+              headline size would present them as current.
+            {% endcomment %}
+            <span class="value {{ headline }}">&mdash;</span>
+          {% elsif printer.state == "idle" %}
+            <span class="value {{ headline }}">Ready</span>
+          {% elsif printer.progress %}
+            <span class="value {{ headline }} value--tnums">{{ printer.progress }}%</span>
+          {% else %}
+            <span class="value {{ headline }}">{{ printer.state | capitalize }}</span>
+          {% endif %}
+
+          <span class="label">
+            {% if printer.name %}{{ printer.name }}{% else %}Printer {{ forloop.index }}{% endif %}
+            &middot;
+            {% if printer.stale %}
+              reading is old
+            {% else %}
+              {{ printer.state | capitalize }}
+            {% endif %}
+            {% if printer.stage %} &middot; {{ printer.stage }}{% endif %}
+            {% if printer.job %} &middot; {{ printer.job }}{% endif %}
+            {% comment %}
+              At three printers the figures move onto this line, because the
+              grid below needs about 45px and three blocks of headline, label,
+              rail and grid come to more than the 430px available. Losing the
+              labels is a smaller cost than clipping the percentages.
+            {% endcomment %}
+            {% if printers.size > 2 %}
+              {% if printer.remaining %} &middot; {{ printer.remaining }} left{% endif %}
+              {% if printer.layer %} &middot; layer {{ printer.layer }}{% if printer.layers %}/{{ printer.layers }}{% endif %}{% endif %}
+            {% endif %}
+            {% if printer.alert %} &middot; ALERT {{ printer.alert }}{% endif %}
+          </span>
+        </div>
+      </div>
+
+      {% comment %}
+        Both the rail and the figures sit behind the same guard as the headline.
+        The payload still carries a percentage for a printer that was printing
+        when we last heard from it, so a filled rail beside a dashed headline
+        would show an old value as though it were current.
+      {% endcomment %}
+      {% unless unreadable %}
+        {% render "progress_rail", progress: printer.progress, size: "progress-bar--large" %}
+        {% unless printers.size > 2 %}
+          {% render "printer_stats", printer: printer %}
+        {% endunless %}
+      {% endunless %}
+    </div>
+  {% endfor %}
+</div>
+
+{% render "plugin_footer", hidden: hidden, cloud: cloud, updated_at: updated_at %}

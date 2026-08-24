@@ -1,0 +1,54 @@
+{% comment %}
+Tall, narrow printer status for a vertical half screen. Every printer keeps its
+name and print essentials; absent metrics never reserve a blank row.
+{% endcomment %}
+
+<div class="list">
+  {% for printer in printers %}
+    <div class="item">
+      <div class="content">
+        {% render "alert_marker", alert: printer.alert, show_detail: false %}
+
+        {% if printer.stale or printer.state == "offline" or printer.state == "unknown" %}
+          <span class="value value--base">Reading old</span>
+          <span class="label">
+            {% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}
+            · {{ printer.state | capitalize }}
+          </span>
+        {% elsif printer.state == "idle" %}
+          {% if printers.size == 3 %}
+            <span class="value value--base">Ready</span>
+          {% else %}
+            <span class="value value--large">Ready</span>
+          {% endif %}
+          <span class="label">{% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}</span>
+        {% else %}
+          {% if printer.progress %}
+            {% if printers.size == 3 %}
+              <span class="value value--large value--tnums">{{ printer.progress }}%</span>
+            {% else %}
+              <span class="value value--xxlarge value--tnums">{{ printer.progress }}%</span>
+            {% endif %}
+          {% else %}
+            <span class="value value--base">{{ printer.state | capitalize }}</span>
+          {% endif %}
+          <span class="label">{% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}</span>
+          <span class="description">{{ printer.state | capitalize }}</span>
+          {% if printers.size == 3 %}
+            {% render "progress_rail", progress: printer.progress, size: "progress-bar--xsmall" %}
+          {% else %}
+            {% render "progress_rail", progress: printer.progress, size: "progress-bar--small" %}
+          {% endif %}
+          {% if printer.remaining %}<span class="description">{{ printer.remaining }} remaining</span>{% endif %}
+          {% if printer.layer %}
+            <span class="description">Layer {{ printer.layer }}{% if printer.layers %} / {{ printer.layers }}{% endif %}</span>
+          {% elsif printer.layers %}
+            <span class="description">{{ printer.layers }} total layers</span>
+          {% endif %}
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+</div>
+
+{% render "plugin_note", hidden: hidden, cloud: cloud %}

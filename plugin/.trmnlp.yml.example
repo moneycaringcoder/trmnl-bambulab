@@ -1,16 +1,54 @@
-# trmnlp local preview configuration example.
+# Sanitized local TRMNL preview data.
 #
-# Copy to plugin/.trmnlp.yml, which is git-ignored. The real file may contain
-# an API key and must never be committed.
-#
-# Run the preview with the official image:
-#   docker run --rm -p 4567:4567 -v "$PWD/plugin:/plugin" trmnl/trmnlp serve
-
+# Copy this file to plugin/.trmnlp.yml. The destination is git-ignored because
+# a developer may later add an API key; never put credentials in this example.
 ---
-# Preview data comes from a sanitized merged fixture, never from live telemetry.
+watch:
+  - src
+  - .trmnlp.yml
+transform_runtime: disabled
+time_zone: UTC
 variables:
-  # Load with: trmnlp serve, then swap the fixture path to preview another state.
-  merge_variables_file: ../bridge/fixtures/merged/printing.synthetic.json
-
-# Fill in locally only if you push builds from the CLI.
-# api_key: ""
+  # This is bridge/fixtures/merged/printing.synthetic.json expressed as YAML so
+  # the container can render it while mounting only the plugin directory.
+  v: 1
+  updated_at: "2026-01-01T00:00Z"
+  printers:
+    - state: printing
+      raw_state: SYNTHETIC_RUNNING
+      name: Demo Printer One
+      model: Demo Model A
+      online: true
+      stale: false
+      progress: 42
+      layer: 81
+      layers: 194
+      remaining: 1h 16m
+      stage: Synthetic printing check
+      nozzle: 220
+      nozzle_target: 220
+      bed: 60
+      bed_target: 60
+      material: Demo PLA
+      job:
+      alert:
+    - state: idle
+      raw_state: SYNTHETIC_IDLE
+      name: Demo Printer Two
+      model: Demo Model B
+      online: true
+      stale: false
+      progress:
+      layer:
+      layers:
+      remaining:
+      stage:
+      nozzle: 24
+      nozzle_target:
+      bed: 23
+      bed_target:
+      material:
+      job:
+      alert:
+  hidden: 0
+  cloud: connected

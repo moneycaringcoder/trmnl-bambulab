@@ -1,0 +1,122 @@
+{% comment %}
+Shared display primitives for the four TRMNL viewports.
+
+These templates only format already-normalized display values. They deliberately
+refuse to supply defaults for absent metrics: a missing value stays invisible
+rather than turning into a plausible-looking zero.
+{% endcomment %}
+
+{% template progress_rail %}
+  {% if progress %}
+    <div class="progress progress-bar {{ size }}">
+      <div class="track">
+        <div class="fill" style="width: {{ progress }}%"></div>
+      </div>
+    </div>
+  {% endif %}
+{% endtemplate %}
+
+{% template alert_marker %}
+  {% if alert %}
+    <div class="item item--emphasis-2">
+      <div class="content">
+        <span class="value value--xsmall">! ALERT</span>
+        {% if show_detail %}
+          <span class="description">{{ alert }}</span>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+{% endtemplate %}
+
+{% comment %}
+  The full view's bottom strip. The framework reserves space for a `.title_bar`
+  there, so it is always rendered: omitting it when there is nothing to report
+  leaves the content floating in a screen taller than it expects.
+
+  The timestamp is the bridge's, in UTC, and labelled as such. The obvious
+  alternative is the device's own clock, but that shows when the screen was
+  drawn rather than when the data was read, which is precisely the distinction
+  a freshness stamp exists to make.
+{% endcomment %}
+{% template plugin_footer %}
+  <div class="title_bar">
+    <span class="title">
+      Bambu Lab
+      {% if hidden > 0 %} &middot; +{{ hidden }} not shown{% endif %}
+      {% if cloud != "connected" %} &middot; cloud {{ cloud | replace: "_", " " }}{% endif %}
+      {% if updated_at %} &middot; {{ updated_at | slice: 11, 5 }} UTC{% endif %}
+    </span>
+  </div>
+{% endtemplate %}
+
+{% comment %}
+  The same information for a shared screen, where a permanent bar would cost
+  more room than it earns. Rendered only when there is something the viewer
+  could not otherwise work out, and then without the branding or the clock.
+{% endcomment %}
+{% template plugin_note %}
+  {% if hidden > 0 or cloud != "connected" %}
+    <span class="label">
+      {% if hidden > 0 %}+{{ hidden }} not shown{% endif %}
+      {% if hidden > 0 and cloud != "connected" %} &middot; {% endif %}
+      {% if cloud != "connected" %}cloud {{ cloud | replace: "_", " " }}{% endif %}
+    </span>
+  {% endif %}
+{% endtemplate %}
+
+{% comment %}
+  A printer's supporting numbers, one per grid column. Each is guarded
+  independently, so a printer reporting a bed but no nozzle shows one figure
+  rather than a gap where the other would be.
+
+  `.grid` rather than `.layout` or a bare `.item`. The framework gives
+  `.layout` `container-type: size`, so a `.layout` that no parent is stretching
+  reports zero height and its contents vanish; and the sibling gap inside a
+  single `.item` is two pixels, which runs adjacent figures together into one
+  unreadable string. `.grid` gives equal columns and the framework's own gap.
+{% endcomment %}
+{% template printer_stats %}
+  <div class="grid">
+    {% if printer.remaining %}
+      <div class="item">
+        <div class="content">
+          <span class="value value--small value--tnums">{{ printer.remaining }}</span>
+          <span class="label">Remaining</span>
+        </div>
+      </div>
+    {% endif %}
+    {% if printer.layer %}
+      <div class="item">
+        <div class="content">
+          <span class="value value--small value--tnums">{{ printer.layer }}{% if printer.layers %}/{{ printer.layers }}{% endif %}</span>
+          <span class="label">Layer</span>
+        </div>
+      </div>
+    {% endif %}
+    {% if printer.nozzle %}
+      <div class="item">
+        <div class="content">
+          <span class="value value--small value--tnums">{{ printer.nozzle }}{% if printer.nozzle_target %}/{{ printer.nozzle_target }}{% endif %}&deg;</span>
+          <span class="label">Nozzle</span>
+        </div>
+      </div>
+    {% endif %}
+    {% if printer.bed %}
+      <div class="item">
+        <div class="content">
+          <span class="value value--small value--tnums">{{ printer.bed }}{% if printer.bed_target %}/{{ printer.bed_target }}{% endif %}&deg;</span>
+          <span class="label">Bed</span>
+        </div>
+      </div>
+    {% endif %}
+    {% if printer.material %}
+      <div class="item">
+        <div class="content">
+          <span class="value value--small">{{ printer.material }}</span>
+          <span class="label">Filament</span>
+        </div>
+      </div>
+    {% endif %}
+  </div>
+{% endtemplate %}

@@ -1,0 +1,13 @@
+---
+strategy: webhook
+no_screen_padding: "no"
+dark_mode: "no"
+framework_version: latest
+name: Bambu Lab Printer Status
+description: Print status at a glance
+# Minutes between device refreshes. The bridge pushes at most every five
+# minutes, because TRMNL accepts twelve pushes an hour, so refreshing faster
+# than that spends battery to redraw the same pixels. Fifteen is a compromise
+# the owner can lower in the TRMNL interface if they would rather have the
+# freshness than the battery.
+refresh_interval: 15

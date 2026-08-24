@@ -1,0 +1,40 @@
+{% comment %}
+Minimal printer status for a quadrant. It spends the limited space on a state
+word or percentage, remaining time, and a high-contrast alert marker.
+{% endcomment %}
+
+<div class="list">
+  {% for printer in printers %}
+    <div class="item">
+      <div class="content">
+        {% if printer.alert %}<span class="value value--xsmall">! ALERT</span>{% endif %}
+
+        {% if printer.stale or printer.state == "offline" or printer.state == "unknown" %}
+          <span class="value value--base">Reading old</span>
+          <span class="label">{% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}</span>
+        {% elsif printer.state == "idle" %}
+          <span class="value value--base">Ready</span>
+          {% if printers.size < 3 %}
+            <span class="label">{% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}</span>
+          {% endif %}
+        {% else %}
+          {% if printer.progress %}
+            {% if printers.size == 3 %}
+              <span class="value value--base value--tnums">{{ printer.progress }}%</span>
+            {% else %}
+              <span class="value value--large value--tnums">{{ printer.progress }}%</span>
+            {% endif %}
+          {% else %}
+            <span class="value value--base">{{ printer.state | capitalize }}</span>
+          {% endif %}
+          {% if printers.size < 3 %}
+            <span class="label">{% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}</span>
+          {% endif %}
+          {% if printer.remaining %}<span class="description">{{ printer.remaining }} left</span>{% endif %}
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+</div>
+
+{% render "plugin_note", hidden: hidden, cloud: cloud %}

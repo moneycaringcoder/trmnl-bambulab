@@ -1,0 +1,42 @@
+{% comment %}
+Wide, short printer status for a horizontal half screen. It keeps the percentage
+beside every rail and drops temperature detail before print essentials.
+{% endcomment %}
+
+<div class="grid">
+  {% for printer in printers %}
+    <div class="item">
+      <div class="content">
+        {% render "alert_marker", alert: printer.alert, show_detail: false %}
+
+        {% if printer.stale or printer.state == "offline" or printer.state == "unknown" %}
+          <span class="value value--base">Reading old</span>
+          <span class="label">
+            {% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}
+            · {{ printer.state | capitalize }}
+          </span>
+        {% elsif printer.state == "idle" %}
+          <span class="value value--large">Ready</span>
+          <span class="label">{% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}</span>
+        {% else %}
+          {% if printer.progress %}
+            <span class="value value--xlarge value--tnums">{{ printer.progress }}%</span>
+          {% else %}
+            <span class="value value--base">{{ printer.state | capitalize }}</span>
+          {% endif %}
+          <span class="label">{% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}</span>
+          <span class="description">{{ printer.state | capitalize }}</span>
+          {% render "progress_rail", progress: printer.progress, size: "progress-bar--small" %}
+          {% if printer.remaining %}<span class="description">{{ printer.remaining }} remaining</span>{% endif %}
+          {% if printer.layer %}
+            <span class="description">Layer {{ printer.layer }}{% if printer.layers %} / {{ printer.layers }}{% endif %}</span>
+          {% elsif printer.layers %}
+            <span class="description">{{ printer.layers }} total layers</span>
+          {% endif %}
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+</div>
+
+{% render "plugin_note", hidden: hidden, cloud: cloud %}

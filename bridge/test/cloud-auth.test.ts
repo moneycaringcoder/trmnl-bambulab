@@ -7,12 +7,12 @@ import {
   type AuthPhase,
   type AuthTransition,
 } from "../src/providers/bambu-cloud/auth.ts";
-import { syntheticToken } from "./synthetic-values.ts";
+import { MQTT_USERNAME, syntheticToken } from "./synthetic-values.ts";
 
 const ACCOUNT = "printer-owner@example.com";
 // Built at runtime so no password-shaped literal exists in this file.
 const PASSWORD = "x".repeat(10);
-const TOKEN = syntheticToken({ username: "u_1234567" });
+const TOKEN = syntheticToken({ username: MQTT_USERNAME });
 
 function expectFailure(transition: AuthTransition): {
   code: string;

@@ -9,10 +9,16 @@ import {
   validateConfig,
   type BridgeConfig,
 } from "../src/setup/config.ts";
-import { DEVICE_ID, secondsFrom, syntheticToken, syntheticWebhookUrl } from "./synthetic-values.ts";
+import {
+  DEVICE_ID,
+  MQTT_USERNAME,
+  secondsFrom,
+  syntheticToken,
+  syntheticWebhookUrl,
+} from "./synthetic-values.ts";
 
 const NOW = Date.UTC(2026, 0, 1);
-const TOKEN = syntheticToken({ username: "u_1234567", exp: secondsFrom(NOW, 30 * 86_400_000) });
+const TOKEN = syntheticToken({ username: MQTT_USERNAME, exp: secondsFrom(NOW, 30 * 86_400_000) });
 const WEBHOOK = syntheticWebhookUrl();
 const SECOND_DEVICE = `${DEVICE_ID}B`;
 

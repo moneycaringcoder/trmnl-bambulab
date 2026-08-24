@@ -1,5 +1,47 @@
 import { describe, expect, it } from "vitest";
-import { clampPercent, formatRemaining, toDisplayState } from "../src/normalize/state.ts";
+import {
+  clampPercent,
+  formatRemaining,
+  fromTaskStatus,
+  toDisplayState,
+} from "../src/normalize/state.ts";
+
+// The bug this pins came from a real account. `/user/bind` reports
+// `print_status: "SUCCESS"` for a printer that finished a job days ago and is
+// now sitting idle, and it keeps reporting it. Feeding that through the live
+// mapping rendered an idle printer as "Finished" forever.
+describe("fromTaskStatus", () => {
+  it.each(["SUCCESS", "FINISH", "FINISHED", "FAILED", "FAILURE"] as const)(
+    "reads the terminal outcome %s as an idle printer",
+    (rawState) => {
+      expect(fromTaskStatus(rawState)).toEqual({ state: "idle", rawState });
+    },
+  );
+
+  it("still reads an in-flight job as in flight", () => {
+    expect(fromTaskStatus("RUNNING")).toEqual({ state: "printing", rawState: "RUNNING" });
+    expect(fromTaskStatus("PAUSE")).toEqual({ state: "paused", rawState: "PAUSE" });
+    expect(fromTaskStatus("PREPARE")).toEqual({ state: "preparing", rawState: "PREPARE" });
+  });
+
+  // Nothing is actually discarded: the token survives for the display and for
+  // anyone reading a log, it just stops driving the headline.
+  it("keeps the raw token so the outcome is not lost", () => {
+    expect(fromTaskStatus("failed").rawState).toBe("failed");
+  });
+
+  it("leaves an unrecognized or absent token unknown, never idle by accident", () => {
+    expect(fromTaskStatus("SOMETHING_NEW")).toEqual({
+      state: "unknown",
+      rawState: "SOMETHING_NEW",
+    });
+    expect(fromTaskStatus(null)).toEqual({ state: "unknown", rawState: null });
+    expect(fromTaskStatus("")).toEqual({ state: "unknown", rawState: null });
+  });
+});
+
+// The live mapping is unchanged: on MQTT, FINISH really does mean it just
+// finished, and that is worth showing.
 
 describe("toDisplayState", () => {
   it.each([

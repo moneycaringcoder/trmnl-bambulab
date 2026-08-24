@@ -9,7 +9,7 @@
 
 import { z } from "zod";
 import type { CapabilitySet, PartialPrinterState } from "../types.ts";
-import { clampPercent, toDisplayState } from "./state.ts";
+import { clampPercent, fromTaskStatus } from "./state.ts";
 
 export const CLOUD_HTTP_CAPABILITIES: CapabilitySet = {
   realtimeTelemetry: false,
@@ -47,7 +47,14 @@ const deviceListSchema = z.object({ devices: z.array(z.unknown()) });
  * none is display state, and none belongs in a merged snapshot.
  *
  * No known HTTP endpoint supplies layer, remaining time, or temperature, so
- * those keys are deliberately never set here rather than filled with zero.
+ * those keys are deliberately never set here rather than filled with zero. As
+ * of 2026-08-24, `/user/print` was observed to return no task fields at all —
+ * not even `progress` — so in practice HTTP supplies identity and online state
+ * and nothing more.
+ *
+ * `print_status` describes the *last job*, not the printer: an idle printer
+ * reports `SUCCESS` indefinitely. `fromTaskStatus` is what keeps that from
+ * rendering as "Finished" forever.
  *
  * An absent field is omitted rather than set to null. The coordinator treats a
  * null as news and would let it erase a value learned from the other endpoint,
@@ -72,7 +79,7 @@ export function parseBindReport(payload: unknown): Map<string, PartialPrinterSta
 
     const fields: PartialPrinterState = {};
     if (Object.keys(printer).length > 0) fields.printer = printer;
-    if (raw.print_status !== undefined) fields.job = toDisplayState(raw.print_status);
+    if (raw.print_status !== undefined) fields.job = fromTaskStatus(raw.print_status);
 
     devices.set(raw.dev_id, fields);
   }
@@ -97,7 +104,7 @@ export function parseCurrentPrint(
     if (raw.dev_online !== undefined) printer.online = raw.dev_online;
 
     const job: NonNullable<PartialPrinterState["job"]> = {};
-    if (raw.task_status !== undefined) Object.assign(job, toDisplayState(raw.task_status));
+    if (raw.task_status !== undefined) Object.assign(job, fromTaskStatus(raw.task_status));
     if (raw.progress !== undefined) job.progress = clampPercent(raw.progress);
     // Absent unless opted in, so this endpoint cannot even carry the name to
     // the next layer. The payload builder refuses it a second time.

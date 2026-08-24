@@ -53,6 +53,25 @@ describe("parseBindReport", () => {
     expect(devices.get(DEVICE_ID)).toEqual({});
   });
 
+  // Observed on a real account: an idle printer that last printed successfully
+  // reports `print_status: "SUCCESS"`, and keeps reporting it. Rendering that
+  // as "Finished" would present a days-old outcome as the current state.
+  it("reads a printer whose last job succeeded as idle, not finished", () => {
+    const devices = parseBindReport({
+      devices: [{ dev_id: DEVICE_ID, print_status: "SUCCESS", online: true }],
+    });
+
+    expect(devices.get(DEVICE_ID)?.job).toEqual({ state: "idle", rawState: "SUCCESS" });
+    expect(devices.get(DEVICE_ID)?.printer?.online).toBe(true);
+  });
+
+  it("still reads a printer that is actually running as printing", () => {
+    const devices = parseBindReport({
+      devices: [{ dev_id: DEVICE_ID, print_status: "RUNNING", online: true }],
+    });
+    expect(devices.get(DEVICE_ID)?.job).toEqual({ state: "printing", rawState: "RUNNING" });
+  });
+
   it("returns an empty map for an unusable response", () => {
     expect(parseBindReport(null).size).toBe(0);
     expect(parseBindReport({ devices: "not-an-array" }).size).toBe(0);

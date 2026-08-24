@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { newAccountId, newScreenKey, screenKeyFingerprint, sealToken } from "../src/crypto.ts";
-import { FRESH_FOR_MS, serveScreen } from "../src/screen.ts";
+import { FRESH_FOR_MS, serveScreen, type RateLimiter } from "../src/screen.ts";
 import { MemoryStore } from "../src/store-memory.ts";
 import type { Account, Store } from "../src/store.ts";
 import { keyringForTest, TOKEN } from "./helpers.ts";
@@ -292,5 +292,170 @@ describe("the freshness keys cannot collide with the payload", () => {
 
     expect(Object.keys(built.variables)).not.toContain("age_minutes");
     expect(Object.keys(built.variables)).not.toContain("fresh");
+  });
+});
+
+/** A limiter that allows a fixed number of calls, then refuses, recording keys. */
+function limiterAllowing(count: number): RateLimiter & { keys: string[] } {
+  const keys: string[] = [];
+  return {
+    keys,
+    async limit({ key }) {
+      keys.push(key);
+      return { success: keys.length <= count };
+    },
+  };
+}
+
+describe("rate limiting", () => {
+  // Stronger than counting queries: a store whose every method throws proves
+  // the shape check refuses before anything touches the database at all.
+  it("does not touch the database for a key that cannot be one of ours", async () => {
+    const refusing = new Proxy({} as Store, {
+      get: () => () => {
+        throw new Error("the database must not be reached for a malformed key");
+      },
+    });
+
+    const outcome = await serveScreen(refusing, OPEN, {
+      authorization: bearer("obviously-not-a-key"),
+      clientAddress: "198.51.100.9",
+      now: NOW,
+    });
+
+    expect(outcome.kind).toBe("unknown-key");
+  });
+
+  it("refuses a malformed key exactly as it refuses an unknown one", async () => {
+    const store = new MemoryStore();
+    await enrol(store, { renderedAt: NOW });
+
+    for (const candidate of ["short", "!".repeat(43), `${newScreenKey()}x`]) {
+      const outcome = await serveScreen(store, OPEN, {
+        authorization: bearer(candidate),
+        clientAddress: null,
+        now: NOW,
+      });
+      expect(outcome.kind).toBe("unknown-key");
+    }
+  });
+
+  it("refuses before the lookup, so a rejected request costs no query", async () => {
+    let lookups = 0;
+    const counting = new Proxy({} as Store, {
+      get: (_target, name) => {
+        if (name === "accountByScreenKey") {
+          return () => {
+            lookups += 1;
+            return Promise.resolve(null);
+          };
+        }
+        throw new Error(`unexpected store call: ${String(name)}`);
+      },
+    });
+    const addressLimiter = limiterAllowing(3);
+    const policy = { allowedAddresses: [] as readonly string[], addressLimiter };
+
+    const seen: string[] = [];
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const outcome = await serveScreen(counting, policy, {
+        // A different well-formed key each time, which is what a guessing
+        // attack looks like. The shape check cannot stop these.
+        authorization: bearer(newScreenKey()),
+        clientAddress: "198.51.100.9",
+        now: NOW,
+      });
+      seen.push(outcome.kind);
+    }
+
+    expect(seen).toEqual([
+      "unknown-key",
+      "unknown-key",
+      "unknown-key",
+      "address-limited",
+      "address-limited",
+      "address-limited",
+    ]);
+    // The ceiling has to bound the expensive thing. Three allowed, three
+    // refused, and only the allowed three reached Postgres.
+    expect(lookups).toBe(3);
+    expect(new Set(addressLimiter.keys)).toEqual(new Set(["198.51.100.9"]));
+  });
+
+  // The allowlist is how TRMNL is exempted, rather than guessing a limit its
+  // traffic will never reach. If this breaks, TRMNL gets throttled at scale.
+  it("never counts an allowlisted caller", async () => {
+    const store = new MemoryStore();
+    const { key } = await enrol(store, { renderedAt: NOW });
+    const addressLimiter = limiterAllowing(0);
+
+    const outcome = await serveScreen(
+      store,
+      { allowedAddresses: ["203.0.113.7"], addressLimiter },
+      { authorization: bearer(key), clientAddress: "203.0.113.7", now: NOW },
+    );
+
+    expect(outcome.kind).toBe("served");
+    expect(addressLimiter.keys).toEqual([]);
+  });
+
+  it("counts a resolved request against that account's fingerprint", async () => {
+    const store = new MemoryStore();
+    const { account, key } = await enrol(store, { renderedAt: NOW });
+    const accountLimiter = limiterAllowing(1);
+    const policy = { allowedAddresses: [] as readonly string[], accountLimiter };
+    const request = { authorization: bearer(key), clientAddress: null, now: NOW };
+
+    expect((await serveScreen(store, policy, request)).kind).toBe("served");
+    expect((await serveScreen(store, policy, request)).kind).toBe("account-limited");
+    // The fingerprint, never the bearer key: a platform counter must not see it.
+    expect(accountLimiter.keys).toEqual([
+      account.screenKeyFingerprint,
+      account.screenKeyFingerprint,
+    ]);
+    expect(accountLimiter.keys).not.toContain(key);
+  });
+
+  it("shares one counter when the platform gives no address", async () => {
+    const store = new MemoryStore();
+    const addressLimiter = limiterAllowing(5);
+
+    await serveScreen(
+      store,
+      { allowedAddresses: [], addressLimiter },
+      { authorization: bearer(newScreenKey()), clientAddress: null, now: NOW },
+    );
+    // Never an empty key, which would silently escape the ceiling entirely.
+    expect(addressLimiter.keys).toEqual(["unknown-address"]);
+  });
+
+  // A volume guard is not authentication. Failing closed on a limiter fault
+  // would blank every customer's display, turning an abuse control into an
+  // outage.
+  it("serves the screen when the limiter itself fails", async () => {
+    const store = new MemoryStore();
+    const { key } = await enrol(store, { renderedAt: NOW });
+    const broken: RateLimiter = {
+      limit: () => Promise.reject(new Error("limiter unavailable")),
+    };
+
+    const outcome = await serveScreen(
+      store,
+      { allowedAddresses: [], addressLimiter: broken, accountLimiter: broken },
+      { authorization: bearer(key), clientAddress: "203.0.113.7", now: NOW },
+    );
+    expect(outcome.kind).toBe("served");
+  });
+
+  it("applies no limit at all when none is configured", async () => {
+    const store = new MemoryStore();
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const outcome = await serveScreen(store, OPEN, {
+        authorization: bearer(newScreenKey()),
+        clientAddress: "198.51.100.9",
+        now: NOW,
+      });
+      expect(outcome.kind).toBe("unknown-key");
+    }
   });
 });

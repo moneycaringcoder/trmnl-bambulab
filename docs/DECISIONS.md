@@ -233,3 +233,102 @@ has an account with.
 So the key stays a narrow read capability — it returns one account's display
 payload and nothing else — and the account behind it is owned by an
 authenticated identity that can rotate it, revoke it, and delete everything.
+
+## D13. The rate ceiling sits before the query, not after it
+
+**Chosen.** `GET /v1/screen` is guarded by two Cloudflare rate-limit bindings:
+
+- **`SCREEN_ADDRESS_LIMITER`**, keyed by client address, consulted **before** the
+  account lookup, and skipped entirely for an allowlisted address. 300 per
+  minute per Cloudflare location.
+- **`SCREEN_ACCOUNT_LIMITER`**, keyed by the account's key fingerprint, consulted
+  after the account resolves. 120 per minute.
+
+**Placement is the entire decision, and the first version got it wrong.** That
+version counted only requests that *failed* to resolve, so that TRMNL — which
+always presents a valid key — could never be throttled by an address-keyed
+counter. It was reviewed and two faults came back, both real:
+
+- It bounded nothing. The counter sat *after* `accountByScreenKey`, so a refused
+  request had already paid for its database query. The limiter changed a status
+  code and nothing else. A control that looks protective while protecting
+  nothing is worse than no control, because it stops anyone looking again.
+- It leaked key validity. Once an address had spent its budget, a key that did
+  not resolve answered `429` while a key that did answered `404` or `200`. That
+  is precisely the oracle the uniform 404 exists to prevent, and the limiter
+  introduced it.
+
+So the counter moved before the lookup, which is the only position from which it
+can bound what an anonymous caller costs us. That placement necessarily counts
+every caller, TRMNL included, because whether a key is real is exactly what the
+lookup is for and no cheaper signal exists beforehand.
+
+**The allowlist is what makes that safe, so it stops being decorative.** An
+allowlisted address skips the counter, which is an exact exemption rather than a
+guess about someone else's traffic. Until `TRMNL_ALLOWED_IPS` is populated the
+ceiling is sized for TRMNL at scale rather than for one user: 300 per minute per
+location, against a fifteen-minute plugin refresh, is a few thousand accounts
+per location before legitimate polling could approach it.
+
+**Only the account ceiling answers `429`.** Reaching it requires already holding
+that account's key, so the status tells its holder nothing new. The address
+ceiling answers the same `404` as every other refusal, and `ScreenOutcome`
+keeps `address-limited` distinct from `unknown-key` internally so the two stay
+diagnosable without becoming distinguishable on the wire.
+
+**A shape check before either.** A screen key is exactly 43 base64url
+characters, and anything else is refused without consuming budget or a query, so
+arbitrary junk costs a string comparison. It is not a security boundary: a
+well-formed guess is still looked up. It reveals the key *format*, through
+latency and through the 503-versus-404 split when the database is unavailable,
+and the format is public anyway. Key *validity* stays hidden.
+
+**Rejected: a Durable Object.** The more powerful tool and the obvious reach,
+but wrong here. It adds a network hop to every poll and storage to maintain, in
+exchange for exact global counting we have no use for — these are cost guards,
+not billing. The platform binding runs in-process, needs no storage, and its
+per-location approximation is the documented trade-off. A sign-up throttle will
+probably need exactness; that is the point to reconsider, per surface rather
+than for the whole tier.
+
+**Both limiters fail open.** Failing open on a security control is normally
+wrong, so the reasoning is written down: this is a volume guard, not
+authentication. The key is the authentication. A limiter fault that failed
+closed would blank every customer's display at once, turning an abuse control
+into an outage, while failing open degrades to the unlimited behaviour this tier
+had before any limiter existed.
+
+**Verified by execution in two separate runs**, against `wrangler dev` and a real
+throwaway Postgres, because the fault this decision corrects was invisible to a
+test with a fake limiter. The two runs answer different questions and neither
+could answer both.
+
+- *Working database.* 400 well-formed guesses from one address all answered
+  `404`, with no `429` anywhere, so no status distinguishes a live key from a
+  dead one. This run cannot show where the ceiling fell — that it cannot is the
+  property being tested.
+- *Unreachable database.* Pointing the Worker at a dead Postgres turns "did we
+  run the query" into an observable status, since a request that reaches the
+  database can only fail. Of 400 guesses from one address, exactly 300 answered
+  `503` and the remaining 100 answered `404`, so the ceiling stopped 100 queries
+  that the earlier design would have paid for. A fresh address was served
+  straight through, so the counters are per address.
+
+Separately, 200 concurrent valid polls spread across 200 different client
+addresses: 119 served and 81 refused with `429`. The account ceiling is
+therefore keyed by the account and varying the address does not evade it. 119
+rather than the configured 120 because a poll from the preceding check was still
+inside the window; the figure is what was measured, not the theoretical number.
+
+**One residual distinguisher, accepted knowingly.** `readScreen` runs only after
+a key has resolved, and any throw out of `serveScreen` becomes a `503` rather
+than the uniform `404`. So a fault isolated to reading screens — a statement
+timeout, a lost table permission — would answer `503` for a key that resolves
+and `404` for one that does not. It is not reachable through any caller-supplied
+input, only through abnormal server state, and reaching it at all requires
+already holding a 256-bit key, at which point a `200` would have said more. The
+alternative is to answer `404` when the database fails, which would hide a real
+outage from whoever has to fix it. Honest failure signalling is worth more than
+closing a distinguisher that needs the key it would reveal.
+
+**Still missing:** sign-up throttling, which cannot exist until sign-up does.

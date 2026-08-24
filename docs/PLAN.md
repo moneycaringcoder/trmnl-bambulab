@@ -53,7 +53,7 @@ one judgement I cannot make from here. `plugin/_build/*.png` is what I think it
 looks like; the hardware is the authority.
 
 Later, and not blocking: deploying the hosted tier to Cloudflare and Neon. Read
-`hosted/README.md` first — three of the six hosted gates in `AGENTS.md` are
+`hosted/README.md` first — two of the six hosted gates in `AGENTS.md` are
 open, which is fine for you testing with your own account and not fine for
 anyone else's token.
 
@@ -115,12 +115,19 @@ an account. What is left, in order:
    Provisioning it in the owner's Neon project is theirs to do.
 4. **Revoke and delete, in the interface.** `deleteAccount` exists and cascades;
    nothing calls it from outside.
-5. **Rate limits and abuse controls.** A launch gate in `AGENTS.md`, not an
-   afterthought.
+5. ~~**Rate limits and abuse controls.**~~ **Done.** Two Cloudflare rate-limit
+   bindings. The address ceiling sits before the account lookup, so it bounds
+   database work rather than relabelling a query already paid for; an
+   allowlisted address skips it, which is what `TRMNL_ALLOWED_IPS` is for.
+   The account ceiling is keyed by key fingerprint. Proven against a real
+   runtime in two runs: with a working database 400 guesses from one address
+   all answered 404, and with the database pointed at nothing 300 of 400
+   reached Postgres while 100 were refused before it. Sign-up throttling
+   waits on sign-up existing.
 6. **Publish the recipe.** One click to install, one field to paste a key into.
 
-Step 2 is now the bulk of the remaining product. Steps 3 to 6 are gates rather
-than features, and step 5 is the one this project cannot launch without.
+Step 2 is the bulk of what remains. Steps 3, 4 and 6 are gates rather than
+features, and step 3 is the one only the owner can start.
 
 ## Known unknowns
 

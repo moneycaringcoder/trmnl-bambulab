@@ -41,6 +41,43 @@
     }
   },
 
+  // Two counters, because the two things worth stopping have nothing in common.
+  //
+  // SCREEN_ADDRESS_LIMITER is consulted *before* the account lookup, so it is a
+  // real ceiling on what an anonymous caller can make us spend in Postgres. A
+  // counter consulted after the lookup would bound nothing: the query is
+  // already paid for by then.
+  //
+  // It counts every caller that is not allowlisted, including TRMNL, because
+  // whether a key is real is exactly what the lookup is for and there is no
+  // cheaper signal beforehand. So the number is sized for TRMNL at scale rather
+  // than for one user: at 300 per minute per Cloudflare location, and a plugin
+  // refresh of fifteen minutes, one location serves a few thousand accounts
+  // before legitimate polling could approach it. Populate TRMNL_ALLOWED_IPS
+  // from https://trmnl.com/api/ips and TRMNL skips this counter entirely, which
+  // is the durable answer and the reason that variable is load-bearing.
+  //
+  // SCREEN_ACCOUNT_LIMITER is keyed by the account's key fingerprint - never
+  // the bearer key, which a platform counter must never see. One counter per
+  // account, bounding what a single misconfigured plugin or a single leaked key
+  // can cost.
+  //
+  // Both are per location, so the real ceiling is a multiple of these numbers.
+  // They are cost guards rather than accounting, which is what the platform
+  // documents them as.
+  "ratelimits": [
+    {
+      "name": "SCREEN_ADDRESS_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 300, "period": 60 }
+    },
+    {
+      "name": "SCREEN_ACCOUNT_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 120, "period": 60 }
+    }
+  ],
+
   // Wrangler validates these names without putting either secret value in Git.
   // Add a new TOKEN_KEY_<ID> here while retaining old keys during key rotation.
   "secrets": {

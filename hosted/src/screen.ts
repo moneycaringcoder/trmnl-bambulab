@@ -26,7 +26,7 @@
  * is testable without a Worker.
  */
 
-import { screenKeyFingerprint } from "./crypto.ts";
+import { looksLikeScreenKey, screenKeyFingerprint } from "./crypto.ts";
 import type { Screen, Store } from "./store.ts";
 
 /**
@@ -63,6 +63,14 @@ function bearerToken(authorization: string | null): string | null {
   return match?.[1] ?? null;
 }
 
+/**
+ * A rate limit counter. Structurally Cloudflare's `RateLimit` binding, declared
+ * here so this module needs no Workers types and a test can supply its own.
+ */
+export interface RateLimiter {
+  limit(options: { key: string }): Promise<{ success: boolean }>;
+}
+
 export interface ScreenPolicy {
   /**
    * TRMNL's own server addresses, from `https://trmnl.com/api/ips`. Empty means
@@ -71,6 +79,32 @@ export interface ScreenPolicy {
    * guessed address list would lock TRMNL out of every account at once.
    */
   allowedAddresses: readonly string[];
+  /**
+   * Counts requests by client address, consulted **before** the account lookup,
+   * and skipped for an allowlisted address.
+   *
+   * Placement is the whole point. A counter consulted *after* the lookup cannot
+   * bound what the lookup costs; it only changes the status code of a query we
+   * already paid for. Consulted before, it is a real ceiling on what an
+   * anonymous caller can make us spend in Postgres.
+   *
+   * The cost of that placement is that it counts every caller, including TRMNL,
+   * because whether a key is real is exactly what the lookup is for and no
+   * cheaper signal exists beforehand. Two things keep that safe. An allowlisted
+   * address skips this counter entirely, which is what makes
+   * `TRMNL_ALLOWED_IPS` load-bearing rather than decorative. And while the
+   * allowlist is empty the ceiling is set for TRMNL-at-scale rather than for a
+   * single user, so the limit is reached by abuse long before it is reached by
+   * legitimate polling.
+   */
+  addressLimiter?: RateLimiter;
+  /**
+   * Counts requests that resolved, keyed by the account's key fingerprint --
+   * never the bearer key, which a platform counter must never see. One counter
+   * per account, bounding what a single misconfigured plugin or a single leaked
+   * key can cost.
+   */
+  accountLimiter?: RateLimiter;
 }
 
 /**
@@ -95,15 +129,42 @@ export type ScreenOutcome =
   | { kind: "unknown-key" }
   | { kind: "not-rendered-yet" }
   | { kind: "unreadable-render" }
-  | { kind: "address-refused" };
+  | { kind: "address-refused" }
+  /** Refused by the address ceiling. Distinct internally, a 404 on the wire. */
+  | { kind: "address-limited" }
+  /** Refused by the account ceiling, which only a real key can reach. */
+  | { kind: "account-limited" };
+
+/**
+ * Asks a limiter for permission, and allows the request when the limiter itself
+ * fails.
+ *
+ * Failing open on a security control is usually wrong, so the reasoning matters.
+ * This is not authentication -- the key is -- it is a volume guard. A limiter
+ * malfunction that failed closed would blank every customer's display at once,
+ * turning an abuse control into an outage. Failing open degrades to the
+ * behaviour this tier had before any limiter existed.
+ */
+async function permitted(limiter: RateLimiter | undefined, key: string): Promise<boolean> {
+  if (limiter === undefined) return true;
+  try {
+    return (await limiter.limit({ key })).success;
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Resolves a request to an outcome.
  *
- * An unknown key, a revoked key and a key belonging to a deleted account all
- * come back as `unknown-key`. They are indistinguishable on purpose: telling a
- * caller which of those it hit turns the endpoint into an oracle for guessing
- * keys, and none of the three has a different remedy.
+ * Every refusal that an unauthenticated caller can reach is one answer:
+ * `no-key`, `unknown-key`, `not-rendered-yet`, `address-refused` and
+ * `address-limited` are separate here for diagnosis and identical on the wire.
+ * Telling a caller which one it hit would turn the endpoint into an oracle for
+ * guessing keys, and none of them has a different remedy.
+ *
+ * `account-limited` is the one refusal that says something, and it is safe
+ * because reaching it requires already holding that account's key.
  *
  * An account whose token the cloud has refused still gets its screen. Its owner
  * needs to re-authenticate, and they are far more likely to notice a display
@@ -114,21 +175,45 @@ export async function serveScreen(
   policy: ScreenPolicy,
   request: ScreenRequest,
 ): Promise<ScreenOutcome> {
-  if (policy.allowedAddresses.length > 0) {
+  const allowlisted =
+    policy.allowedAddresses.length > 0 &&
+    request.clientAddress !== null &&
+    policy.allowedAddresses.includes(request.clientAddress);
+
+  if (policy.allowedAddresses.length > 0 && !allowlisted) {
     // A missing address while an allowlist is configured is a refusal, not a
     // pass. An allowlist that stops applying when the platform omits a header
     // is not an allowlist.
-    if (request.clientAddress === null) return { kind: "address-refused" };
-    if (!policy.allowedAddresses.includes(request.clientAddress)) {
-      return { kind: "address-refused" };
-    }
+    return { kind: "address-refused" };
   }
 
   const key = bearerToken(request.authorization);
   if (key === null) return { kind: "no-key" };
 
+  // Free, and it ends the request before it can consume budget or a query, so
+  // arbitrary junk costs a string comparison. This reveals only the public key
+  // format, which is documented; it is not a security boundary, because a
+  // well-formed guess is still looked up.
+  if (!looksLikeScreenKey(key)) return { kind: "unknown-key" };
+
+  // Before the lookup, because a ceiling consulted afterwards bounds nothing --
+  // the query is already paid for by then. An allowlisted caller skips it: the
+  // allowlist is the exact way to exempt TRMNL, rather than guessing a limit
+  // high enough that its traffic never reaches it.
+  //
+  // The address falls back to a constant so a platform that omits the header
+  // shares one counter rather than escaping the ceiling entirely.
+  if (!allowlisted) {
+    const source = request.clientAddress ?? "unknown-address";
+    if (!(await permitted(policy.addressLimiter, source))) return { kind: "address-limited" };
+  }
+
   const account = await store.accountByScreenKey(await screenKeyFingerprint(key));
   if (account === null) return { kind: "unknown-key" };
+
+  if (!(await permitted(policy.accountLimiter, account.screenKeyFingerprint))) {
+    return { kind: "account-limited" };
+  }
 
   const screen: Screen | null = await store.readScreen(account.id);
   if (screen === null) return { kind: "not-rendered-yet" };

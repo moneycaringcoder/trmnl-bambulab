@@ -206,6 +206,35 @@ export function newScreenKey(): string {
 }
 
 /**
+ * The exact width of a minted screen key: 32 bytes as unpadded base64url.
+ *
+ * Exported so the shape check and the minting cannot drift apart.
+ */
+export const SCREEN_KEY_LENGTH = 43;
+
+/**
+ * Whether a presented value could possibly be one of our keys.
+ *
+ * Worth having because it costs nothing and saves a database round trip. A
+ * scanner throwing arbitrary strings at the endpoint never reaches Postgres,
+ * which removes the cheapest way to make us pay for someone else's traffic.
+ *
+ * This is a shape test and not an authentication decision: a value that passes
+ * is still looked up, so passing proves nothing. What it does reveal, to be
+ * precise about it, is the key *format* -- a caller can tell a well-formed
+ * guess from junk by latency, and plainly so when the database is down, where a
+ * well-formed key answers 503 and junk answers 404. The format is public
+ * anyway, being documented and visible to every key holder. Key *validity* is
+ * not revealed by this check, and the endpoint answers one identical 404 to
+ * every refusal a caller can provoke. The one exception is not caller-reachable:
+ * a database fault after a key resolves surfaces as a 503, which see `D13` in
+ * `docs/DECISIONS.md` for why that trade is taken deliberately.
+ */
+export function looksLikeScreenKey(value: string): boolean {
+  return value.length === SCREEN_KEY_LENGTH && /^[A-Za-z0-9_-]+$/.test(value);
+}
+
+/**
  * The stored form of a screen key: SHA-256, hex.
  *
  * A plain hash rather than a password KDF, and that is the right call here

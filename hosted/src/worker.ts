@@ -18,7 +18,7 @@ import {
   type AccountCycleSummary,
 } from "./cycle.ts";
 import { createLogger, type LogDetail } from "./log.ts";
-import { serveScreen } from "./screen.ts";
+import { serveScreen, type ScreenOutcome } from "./screen.ts";
 import { NeonStore } from "./store-neon.ts";
 
 const logger = createLogger("info");
@@ -136,7 +136,11 @@ async function screenResponse(request: Request, env: Env): Promise<Response> {
   try {
     outcome = await serveScreen(
       new NeonStore(env.DATABASE_URL),
-      { allowedAddresses: allowed },
+      {
+        allowedAddresses: allowed,
+        addressLimiter: env.SCREEN_ADDRESS_LIMITER,
+        accountLimiter: env.SCREEN_ACCOUNT_LIMITER,
+      },
       {
         // A header, never the query string: the key is a bearer credential and
         // Cloudflare's own invocation logs record the full URL of every request.
@@ -151,6 +155,38 @@ async function screenResponse(request: Request, env: Env): Promise<Response> {
     return new Response("Service Unavailable", {
       status: 503,
       headers: { "Cache-Control": "no-store" },
+    });
+  }
+
+  return screenHttpResponse(outcome);
+}
+
+/**
+ * The HTTP form of an outcome, as a function so a test can assert every status
+ * without a database or a network.
+ *
+ * Every refusal that is not a rate limit is a byte-identical 404. An unknown
+ * key, a malformed key, a revoked key, a key for a deleted account and an
+ * account with nothing rendered are one answer on purpose: a caller that can
+ * tell them apart has an oracle for guessing keys.
+ */
+export function screenHttpResponse(outcome: ScreenOutcome): Response {
+  // Only the account ceiling answers 429, and only a caller already holding
+  // that account's key can reach it, so the status reveals nothing a holder of
+  // the key does not already know. The address ceiling deliberately answers the
+  // same 404 as every other refusal: a 429 there would tell an enumerator that
+  // its *other* attempts were the ones being rejected, which distinguishes a
+  // live key from a dead one.
+  if (outcome.kind === "account-limited") {
+    return new Response("Too Many Requests", {
+      status: 429,
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+        // Matches the limiter period, so a well-behaved caller waits exactly
+        // long enough rather than guessing.
+        "Retry-After": "60",
+      },
     });
   }
 

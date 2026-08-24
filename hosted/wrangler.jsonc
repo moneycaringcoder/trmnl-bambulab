@@ -1,0 +1,34 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+
+  // One module Worker; the compatibility date pins today's runtime behaviour,
+  // and nodejs_compat supports the Neon client without changing bridge code.
+  "name": "trmnl-bambulab-hosted",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-08-24",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // TRMNL accepts twelve pushes per hour, so five minutes is the fastest useful
+  // cadence. Polling more often cannot change the display any sooner.
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+
+  // Workers Logs can index the one-object-per-line events emitted by log.ts.
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+
+  // Wrangler validates these names without putting either secret value in Git.
+  // Add a new TOKEN_KEY_<ID> here while retaining old keys during key rotation.
+  "secrets": {
+    "required": ["DATABASE_URL", "TOKEN_KEY_K1"]
+  },
+
+  // A key id is not secret. It chooses which configured key seals new tokens;
+  // older required keys remain available to open rows during rotation.
+  "vars": {
+    "TOKEN_KEY_CURRENT_ID": "k1"
+  }
+}

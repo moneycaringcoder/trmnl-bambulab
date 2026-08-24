@@ -1,0 +1,24 @@
+{
+  "name": "trmnl-bambulab-hosted",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runs the hosted Bambu Cloud to TRMNL polling tier on Cloudflare Workers and Neon.",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "hosted:key": "node --input-type=module -e \"import('./src/crypto.ts').then(async ({ generateKeyBase64 }) => console.log(await generateKeyBase64()))\""
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "5.7.3",
+    "vitest": "^2.1.8",
+    "wrangler": "^4.125.0"
+  }
+}

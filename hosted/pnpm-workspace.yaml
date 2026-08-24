@@ -1,0 +1,5 @@
+# Vitest and Wrangler install native binaries. CI may still disable dependency
+# scripts independently.
+allowBuilds:
+  esbuild: true
+  workerd: true

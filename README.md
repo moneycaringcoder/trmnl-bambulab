@@ -8,8 +8,9 @@ show progress, layer, time remaining, and temperatures.
 
 Bambu Cloud only. Read only — this never sends a command to a printer.
 
-Status: in development. Nothing here has been verified against a real Bambu
-account yet.
+Status: in development. The self-hosted bridge is complete and smoke tested,
+but **nothing here has been verified against a real Bambu account yet**. See
+[`docs/PLAN.md`](docs/PLAN.md).
 
 ## Two ways to run it
 
@@ -25,15 +26,17 @@ nothing leaves your machine except the push to your own TRMNL plugin.
 git config core.hooksPath .githooks   # enable the secret gate
 cd bridge && pnpm install
 pnpm setup
+pnpm start
 ```
 
 `pnpm setup` signs you in, lists the printers on your account, and asks which
 ones to show. You can finish without a TRMNL webhook URL and add it later with
-`pnpm setup webhook`.
+`pnpm setup webhook`. `pnpm start` then runs the bridge until you stop it.
 
 | Command | Does |
 | --- | --- |
 | `pnpm setup` | Configure from scratch |
+| `pnpm start` | Run the bridge |
 | `pnpm setup doctor` | Check the saved configuration, change nothing |
 | `pnpm setup reauth` | Sign in again when the token expires |
 | `pnpm setup webhook` | Set the TRMNL webhook URL |
@@ -44,6 +47,14 @@ are never written to disk. Only the resulting access token is stored, in
 
 Bambu tokens last around three months and their refresh endpoint no longer
 works, so expect to sign in again roughly twice a year.
+
+## What it will show
+
+An idle printer shows its name and that it is ready — no progress bar, no zero
+percentage, no empty layer counter. A printing printer shows the percentage,
+the layer, the time remaining and the temperatures. Up to three printers share
+one screen, ordered so the one that needs you is first. A reading that has gone
+stale says so rather than presenting old numbers as current.
 
 ## What it will not do
 
@@ -56,9 +67,10 @@ works, so expect to sign in again roughly twice a year.
 
 | Path | Contents |
 | --- | --- |
-| `bridge/` | The TypeScript bridge: Bambu Cloud provider and the setup CLI |
-| `plugin/` | TRMNL Private Plugin settings and Liquid templates |
-| `docs/` | Setup guide, TRMNL contract, sources |
+| `bridge/` | The bridge: cloud providers, normalizers, coordinator, payload, MQTT client, daemon, setup CLI |
+| `plugin/` | The TRMNL Private Plugin: settings and the four Liquid views |
+| `hosted/` | The hosted tier: Neon schema, token encryption, and the Cloudflare Worker |
+| `docs/` | Decisions, the plan, what we know of the cloud interface, sources |
 | `scripts/` | Secret scanner |
 | `.omp/` | Agent charter and the project's review agent |
 

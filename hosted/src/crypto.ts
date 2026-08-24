@@ -186,6 +186,40 @@ export function newAccountId(): string {
 }
 
 /**
+ * Mints a screen key: the bearer capability a user pastes into TRMNL.
+ *
+ * 256 bits from the CSPRNG, base64url so it survives a URL and a form field
+ * without escaping. It is shown to its owner once and never stored; only
+ * `screenKeyFingerprint` of it goes in the database, so a leaked dump yields no
+ * working keys.
+ *
+ * Deliberately not the account id. The id is authenticated as this token's
+ * additional data, and a value the user carries around and pastes into a third
+ * party's form is the last thing that should also be the value binding their
+ * ciphertext to their row.
+ */
+export function newScreenKey(): string {
+  const raw = crypto.getRandomValues(new Uint8Array(32));
+  let binary = "";
+  for (const byte of raw) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+/**
+ * The stored form of a screen key: SHA-256, hex.
+ *
+ * A plain hash rather than a password KDF, and that is the right call here
+ * rather than a shortcut. A KDF exists to make guessing a *low-entropy* secret
+ * expensive. This secret is 256 random bits, so guessing is already impossible,
+ * and a slow hash on a path TRMNL calls on every screen refresh would buy
+ * nothing and cost latency on every request.
+ */
+export async function screenKeyFingerprint(key: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key.trim()));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
  * Generates a key for an operator to paste into `wrangler secret put`.
  *
  * Here rather than in a script so that the one place keys are made is the same
@@ -204,14 +238,24 @@ function encodeBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function decodeBase64(value: string): Uint8Array {
+/**
+ * Base64 to bytes, backed by its own `ArrayBuffer`.
+ *
+ * The explicit buffer is not ceremony. Since TypeScript 5.7 `Uint8Array` is
+ * generic over its backing store, and `BufferSource` — which every Web Crypto
+ * call wants — accepts only a view over a real `ArrayBuffer`. A plain
+ * `new Uint8Array(length)` infers the wider `ArrayBufferLike`, which TypeScript
+ * 7 rejects at `importKey` and `decrypt` while 5.7 lets through. Allocating the
+ * buffer here says what is true and compiles under both.
+ */
+function decodeBase64(value: string): Uint8Array<ArrayBuffer> {
   let binary: string;
   try {
     binary = atob(value.trim());
   } catch {
     throw new CryptoError("a stored value is not valid base64");
   }
-  const bytes = new Uint8Array(binary.length);
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
   for (let index = 0; index < binary.length; index += 1) {
     bytes[index] = binary.charCodeAt(index);
   }

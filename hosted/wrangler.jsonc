@@ -8,16 +8,37 @@
   "compatibility_date": "2026-08-24",
   "compatibility_flags": ["nodejs_compat"],
 
-  // TRMNL accepts twelve pushes per hour, so five minutes is the fastest useful
-  // cadence. Polling more often cannot change the display any sooner.
+  // Five minutes because Bambu is the thing being protected, not TRMNL. The
+  // twelve-pushes-an-hour ceiling no longer applies — the hosted tier is polled
+  // rather than pushing — but the cron is now the only thing that reads Bambu,
+  // and one read per account per five minutes is a rate we are comfortable
+  // defending. `FRESH_FOR_MS` in src/screen.ts is three missed cycles of this.
   "triggers": {
     "crons": ["*/5 * * * *"]
   },
 
-  // Workers Logs can index the one-object-per-line events emitted by log.ts.
+  // Workers Logs indexes the one-object-per-line events from log.ts.
+  //
+  // `invocation_logs` goes under `logs`, not directly under `observability`.
+  // Wrangler's schema marks `observability` as additionalProperties:false and
+  // silently drops a misplaced key, so putting it one level too high configures
+  // nothing while looking like it configures something.
+  //
+  // It is off because Cloudflare's automatic Fetch event records
+  // `<Method> <URL>` for every request, and `/v1/screen` is called on every
+  // device refresh. The screen key travels in an Authorization header rather
+  // than the query string, so a URL log would not capture it today — but an
+  // automatic per-request log on an internet-facing authenticated route is a
+  // standing invitation to leak whatever ends up in a URL later, and it is
+  // volume an anonymous caller controls on a route with no rate limit. This
+  // tier gets its observability from the scheduled handler instead.
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 1
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": false
+    }
   },
 
   // Wrangler validates these names without putting either secret value in Git.
@@ -26,9 +47,17 @@
     "required": ["DATABASE_URL", "TOKEN_KEY_K1"]
   },
 
-  // A key id is not secret. It chooses which configured key seals new tokens;
-  // older required keys remain available to open rows during rotation.
+  // Neither of these is secret. The key id chooses which configured key seals
+  // new tokens, while older required keys stay available to open existing rows
+  // during a rotation.
+  //
+  // TRMNL_ALLOWED_IPS is a comma-separated list from https://trmnl.com/api/ips,
+  // and it is empty on purpose. The screen key is the authentication; the
+  // allowlist is depth. Shipping a guessed address list would lock TRMNL out of
+  // every account at once, which is a worse failure than not having the extra
+  // layer. Fill it in once the real list has been checked.
   "vars": {
-    "TOKEN_KEY_CURRENT_ID": "k1"
+    "TOKEN_KEY_CURRENT_ID": "k1",
+    "TRMNL_ALLOWED_IPS": ""
   }
 }

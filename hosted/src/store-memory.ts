@@ -3,16 +3,17 @@
  *
  * Local development and cron tests need the same observable behavior as Neon:
  * oldest-serviced accounts are claimed first, refused credentials are skipped,
- * scheduler state survives calls, and deleting an account also deletes its push
- * record. This implementation performs no network access and deliberately has
- * no logging surface, so credentials and printer identifiers cannot escape it.
+ * key fingerprints are indexed, and deleting an account also deletes its
+ * rendered screen. This implementation performs no network access and
+ * deliberately has no logging surface, so credentials and printer identifiers
+ * cannot escape it.
  *
  * It is not durable and refuses to pretend otherwise. Production code must use
  * the Neon implementation; this class exists for one process lifetime only.
  */
 
 import type { SealedToken } from "./crypto.ts";
-import type { Account, PushRecord, Store } from "./store.ts";
+import type { Account, Screen, Store } from "./store.ts";
 
 interface AccountEntry {
   account: Account;
@@ -29,26 +30,18 @@ function copyAccount(account: Account): Account {
     id: account.id,
     region: account.region,
     token: copyToken(account.token),
+    screenKeyFingerprint: account.screenKeyFingerprint,
     deviceIds: [...account.deviceIds],
-    webhookUrl: account.webhookUrl,
-    maxPushesPerHour: account.maxPushesPerHour,
     maxPayloadBytes: account.maxPayloadBytes,
     exportJobName: account.exportJobName,
     reauthRequired: account.reauthRequired,
   };
 }
 
-function copyPushRecord(record: PushRecord): PushRecord {
-  return {
-    recentPushes: [...record.recentPushes],
-    lastSerialized: record.lastSerialized,
-    lastPushedAt: record.lastPushedAt,
-  };
-}
-
 export class MemoryStore implements Store {
   private readonly accounts = new Map<string, AccountEntry>();
-  private readonly pushRecords = new Map<string, PushRecord>();
+  private readonly accountIdsByScreenKey = new Map<string, string>();
+  private readonly screens = new Map<string, Screen>();
   private createdOrder = 0;
   private servicedOrder = 0;
 
@@ -89,18 +82,27 @@ export class MemoryStore implements Store {
     return entry === undefined ? null : copyAccount(entry.account);
   }
 
+  async accountByScreenKey(fingerprint: string): Promise<Account | null> {
+    const accountId = this.accountIdsByScreenKey.get(fingerprint);
+    if (accountId === undefined) return null;
+    const entry = this.accounts.get(accountId);
+    return entry === undefined ? null : copyAccount(entry.account);
+  }
+
   async createAccount(account: Omit<Account, "reauthRequired">): Promise<Account> {
     if (this.accounts.has(account.id)) {
       throw new Error("that account already exists");
+    }
+    if (this.accountIdsByScreenKey.has(account.screenKeyFingerprint)) {
+      throw new Error("that screen key fingerprint already exists");
     }
 
     const created: Account = {
       id: account.id,
       region: account.region,
       token: copyToken(account.token),
+      screenKeyFingerprint: account.screenKeyFingerprint,
       deviceIds: [...account.deviceIds],
-      webhookUrl: account.webhookUrl,
-      maxPushesPerHour: account.maxPushesPerHour,
       maxPayloadBytes: account.maxPayloadBytes,
       exportJobName: account.exportJobName,
       reauthRequired: false,
@@ -111,11 +113,9 @@ export class MemoryStore implements Store {
       createdOrder: this.createdOrder,
       lastServicedOrder: null,
     });
-    this.pushRecords.set(created.id, {
-      recentPushes: [],
-      lastSerialized: null,
-      lastPushedAt: null,
-    });
+    this.accountIdsByScreenKey.set(created.screenKeyFingerprint, created.id);
+
+    // Like Neon, there is no screens row until the cron has rendered something.
     return copyAccount(created);
   }
 
@@ -126,29 +126,51 @@ export class MemoryStore implements Store {
     entry.account.reauthRequired = false;
   }
 
+  async replaceScreenKey(accountId: string, fingerprint: string): Promise<void> {
+    const entry = this.accounts.get(accountId);
+    if (entry === undefined) return;
+
+    const owner = this.accountIdsByScreenKey.get(fingerprint);
+    if (owner !== undefined && owner !== accountId) {
+      throw new Error("that screen key fingerprint already exists");
+    }
+
+    this.accountIdsByScreenKey.delete(entry.account.screenKeyFingerprint);
+    entry.account.screenKeyFingerprint = fingerprint;
+    this.accountIdsByScreenKey.set(fingerprint, accountId);
+  }
+
   async markReauthRequired(accountId: string): Promise<void> {
     const entry = this.accounts.get(accountId);
     if (entry !== undefined) entry.account.reauthRequired = true;
   }
 
-  async readPushRecord(accountId: string): Promise<PushRecord> {
-    const record = this.pushRecords.get(accountId);
-    return record === undefined
-      ? { recentPushes: [], lastSerialized: null, lastPushedAt: null }
-      : copyPushRecord(record);
+  async readScreen(accountId: string): Promise<Screen | null> {
+    const screen = this.screens.get(accountId);
+    return screen === undefined ? null : { body: screen.body, renderedAt: screen.renderedAt };
   }
 
-  async writePushRecord(accountId: string, record: PushRecord): Promise<void> {
+  async writeScreen(accountId: string, screen: Screen): Promise<void> {
     if (!this.accounts.has(accountId)) {
       throw new Error("that account does not exist");
     }
-    this.pushRecords.set(accountId, copyPushRecord(record));
+    if (typeof screen.body !== "string") {
+      throw new Error('column "body" drifted: expected a string');
+    }
+    if (!Number.isSafeInteger(screen.renderedAt) || screen.renderedAt < 0) {
+      throw new Error('column "rendered_at" drifted: expected a non-negative safe integer');
+    }
+    this.screens.set(accountId, { body: screen.body, renderedAt: screen.renderedAt });
   }
 
   async deleteAccount(accountId: string): Promise<void> {
+    const entry = this.accounts.get(accountId);
+    if (entry === undefined) return;
+
     // Keep the cascade structural here too: there is no tombstone and no path
-    // which removes the account while retaining scheduler state.
+    // which removes the account while retaining its payload or fingerprint.
+    this.accountIdsByScreenKey.delete(entry.account.screenKeyFingerprint);
     this.accounts.delete(accountId);
-    this.pushRecords.delete(accountId);
+    this.screens.delete(accountId);
   }
 }

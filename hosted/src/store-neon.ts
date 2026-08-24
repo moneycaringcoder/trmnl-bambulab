@@ -1,22 +1,23 @@
 /**
  * The hosted store backed by Neon Postgres.
  *
- * A five-minute cron invocation issues only a handful of one-shot queries, so
- * the `neon()` HTTP tagged template is the right transport: it has no connection
- * lifecycle, no pool to keep warm, and no TCP or WebSocket requirement in a
- * Cloudflare Worker. A WebSocket `Pool` would add state this workload cannot
- * reuse and would make overlapping invocations harder to reason about.
+ * A five-minute cron invocation and TRMNL screen refreshes issue one-shot
+ * queries, so the `neon()` HTTP tagged template is the right transport: it has
+ * no connection lifecycle, no pool to keep warm, and no TCP or WebSocket
+ * requirement in a Cloudflare Worker. A WebSocket `Pool` would add state this
+ * workload cannot reuse and would make overlapping invocations harder to reason
+ * about.
  *
  * This module never opens token ciphertext and has no logging surface. Database
  * rows are untrusted at the TypeScript boundary: each field is checked without
- * coercion. Serviceable-account queries skip malformed rows, while malformed
- * scheduler state fails closed rather than resetting a rate limit.
+ * coercion. Serviceable-account queries skip malformed rows, while a malformed
+ * stored screen is rejected rather than served to TRMNL.
  */
 
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 
 import type { SealedToken } from "./crypto.ts";
-import type { Account, PushRecord, Store } from "./store.ts";
+import type { Account, Screen, Store } from "./store.ts";
 
 interface RowDrift {
   ok: false;
@@ -73,20 +74,16 @@ function parseAccount(value: unknown): ParseResult<Account> {
   if (typeof ciphertext !== "string" || ciphertext.length === 0) {
     return drift("token_ciphertext", "a non-empty string");
   }
+  const screenKeyFingerprint = value.screen_key_fingerprint;
+  if (typeof screenKeyFingerprint !== "string" || screenKeyFingerprint.length === 0) {
+    return drift("screen_key_fingerprint", "a non-empty string");
+  }
   const deviceIds = value.device_ids;
   if (
     !Array.isArray(deviceIds) ||
     !deviceIds.every((deviceId) => typeof deviceId === "string" && deviceId.length > 0)
   ) {
     return drift("device_ids", "an array of non-empty strings");
-  }
-  const webhookUrl = value.webhook_url;
-  if (typeof webhookUrl !== "string" || webhookUrl.length === 0) {
-    return drift("webhook_url", "a non-empty string");
-  }
-  const maxPushesPerHour = value.max_pushes_per_hour;
-  if (!Number.isSafeInteger(maxPushesPerHour) || (maxPushesPerHour as number) <= 0) {
-    return drift("max_pushes_per_hour", "a positive safe integer");
   }
   const maxPayloadBytes = value.max_payload_bytes;
   if (!Number.isSafeInteger(maxPayloadBytes) || (maxPayloadBytes as number) <= 0) {
@@ -107,9 +104,8 @@ function parseAccount(value: unknown): ParseResult<Account> {
       id,
       region,
       token: { keyId, nonce, ciphertext },
+      screenKeyFingerprint,
       deviceIds,
-      webhookUrl,
-      maxPushesPerHour: maxPushesPerHour as number,
       maxPayloadBytes: maxPayloadBytes as number,
       exportJobName,
       reauthRequired,
@@ -117,38 +113,19 @@ function parseAccount(value: unknown): ParseResult<Account> {
   };
 }
 
-function parsePushRecord(value: unknown): ParseResult<PushRecord> {
-  if (!isDatabaseRow(value)) return drift("push_records row", "an object");
+function parseScreen(value: unknown): ParseResult<Screen> {
+  if (!isDatabaseRow(value)) return drift("screens row", "an object");
 
-  const recentPushes = value.recent_pushes;
-  if (
-    !Array.isArray(recentPushes) ||
-    !recentPushes.every(
-      (pushedAt) => Number.isSafeInteger(pushedAt) && (pushedAt as number) >= 0,
-    )
-  ) {
-    return drift("recent_pushes", "an array of non-negative safe integers");
+  const body = value.body;
+  if (typeof body !== "string") {
+    return drift("body", "a string");
   }
-  const lastSerialized = value.last_serialized;
-  if (lastSerialized !== null && typeof lastSerialized !== "string") {
-    return drift("last_serialized", "a string or null");
-  }
-  const lastPushedAt = value.last_pushed_at;
-  if (
-    lastPushedAt !== null &&
-    (!Number.isSafeInteger(lastPushedAt) || (lastPushedAt as number) < 0)
-  ) {
-    return drift("last_pushed_at", "a non-negative safe integer or null");
+  const renderedAt = value.rendered_at;
+  if (!Number.isSafeInteger(renderedAt) || (renderedAt as number) < 0) {
+    return drift("rendered_at", "a non-negative safe integer");
   }
 
-  return {
-    ok: true,
-    value: {
-      recentPushes,
-      lastSerialized,
-      lastPushedAt: lastPushedAt as number | null,
-    },
-  };
+  return { ok: true, value: { body, renderedAt: renderedAt as number } };
 }
 
 function rowsFrom(result: unknown): unknown[] {
@@ -195,9 +172,8 @@ export class NeonStore implements Store {
           account.token_key_id,
           account.token_nonce,
           account.token_ciphertext,
+          account.screen_key_fingerprint,
           account.device_ids,
-          account.webhook_url,
-          account.max_pushes_per_hour,
           account.max_payload_bytes,
           account.export_job_name,
           account.reauth_required,
@@ -210,9 +186,8 @@ export class NeonStore implements Store {
         token_key_id,
         token_nonce,
         token_ciphertext,
+        screen_key_fingerprint,
         device_ids,
-        webhook_url,
-        max_pushes_per_hour,
         max_payload_bytes,
         export_job_name,
         reauth_required
@@ -221,10 +196,9 @@ export class NeonStore implements Store {
     `;
 
     // A row whose shape has drifted is skipped rather than coerced: a coerced
-    // account could be pointed at the wrong host or handed someone else's
-    // webhook. It is skipped silently because the only informative thing to log
-    // about it is the row itself, and the row holds a credential and an
-    // identifier. Operationally it surfaces as fewer cycles than accounts.
+    // account could be pointed at the wrong host or expose another account's
+    // stored screen. It is skipped silently because the only informative thing
+    // to log about it is the row itself, and the row holds identifiers.
     const accounts: Account[] = [];
     for (const row of rowsFrom(result)) {
       const parsed = parseAccount(row);
@@ -241,9 +215,8 @@ export class NeonStore implements Store {
         token_key_id,
         token_nonce,
         token_ciphertext,
+        screen_key_fingerprint,
         device_ids,
-        webhook_url,
-        max_pushes_per_hour,
         max_payload_bytes,
         export_job_name,
         reauth_required
@@ -256,38 +229,60 @@ export class NeonStore implements Store {
     return parsed.ok ? parsed.value : null;
   }
 
+  async accountByScreenKey(fingerprint: string): Promise<Account | null> {
+    // This is the refresh hot path: one equality query against the UNIQUE
+    // constraint's index and no dependent read. Deliberately do not filter on
+    // reauth_required. A refused token should leave its last rendered screen
+    // readable; a stale display that says it is stale is better than a blank one.
+    const result: unknown = await this.sql`
+      SELECT
+        id,
+        region,
+        token_key_id,
+        token_nonce,
+        token_ciphertext,
+        screen_key_fingerprint,
+        device_ids,
+        max_payload_bytes,
+        export_job_name,
+        reauth_required
+      FROM accounts
+      WHERE screen_key_fingerprint = ${fingerprint}
+    `;
+    const row = rowsFrom(result)[0];
+    if (row === undefined) return null;
+    const parsed = parseAccount(row);
+    return parsed.ok ? parsed.value : null;
+  }
+
   async createAccount(account: Omit<Account, "reauthRequired">): Promise<Account> {
+    // No screens row is created here. Its absence is the legitimate state before
+    // the first cron render, and `readScreen` represents that state as null. The
+    // first `writeScreen` inserts the row atomically when there is real content.
     await this.sql`
-      WITH created AS (
-        INSERT INTO accounts (
-          id,
-          region,
-          token_key_id,
-          token_nonce,
-          token_ciphertext,
-          device_ids,
-          webhook_url,
-          max_pushes_per_hour,
-          max_payload_bytes,
-          export_job_name,
-          reauth_required
-        ) VALUES (
-          ${account.id},
-          ${account.region},
-          ${account.token.keyId},
-          ${account.token.nonce},
-          ${account.token.ciphertext},
-          ${account.deviceIds},
-          ${account.webhookUrl},
-          ${account.maxPushesPerHour},
-          ${account.maxPayloadBytes},
-          ${account.exportJobName},
-          false
-        )
-        RETURNING id
+      INSERT INTO accounts (
+        id,
+        region,
+        token_key_id,
+        token_nonce,
+        token_ciphertext,
+        screen_key_fingerprint,
+        device_ids,
+        max_payload_bytes,
+        export_job_name,
+        reauth_required
+      ) VALUES (
+        ${account.id},
+        ${account.region},
+        ${account.token.keyId},
+        ${account.token.nonce},
+        ${account.token.ciphertext},
+        ${account.screenKeyFingerprint},
+        ${account.deviceIds},
+        ${account.maxPayloadBytes},
+        ${account.exportJobName},
+        false
       )
-      INSERT INTO push_records (account_id)
-      SELECT id FROM created
     `;
     return {
       id: account.id,
@@ -297,9 +292,8 @@ export class NeonStore implements Store {
         nonce: account.token.nonce,
         ciphertext: account.token.ciphertext,
       },
+      screenKeyFingerprint: account.screenKeyFingerprint,
       deviceIds: [...account.deviceIds],
-      webhookUrl: account.webhookUrl,
-      maxPushesPerHour: account.maxPushesPerHour,
       maxPayloadBytes: account.maxPayloadBytes,
       exportJobName: account.exportJobName,
       reauthRequired: false,
@@ -318,6 +312,14 @@ export class NeonStore implements Store {
     `;
   }
 
+  async replaceScreenKey(accountId: string, fingerprint: string): Promise<void> {
+    await this.sql`
+      UPDATE accounts
+      SET screen_key_fingerprint = ${fingerprint}
+      WHERE id = ${accountId}
+    `;
+  }
+
   async markReauthRequired(accountId: string): Promise<void> {
     await this.sql`
       UPDATE accounts
@@ -326,57 +328,45 @@ export class NeonStore implements Store {
     `;
   }
 
-  async readPushRecord(accountId: string): Promise<PushRecord> {
+  async readScreen(accountId: string): Promise<Screen | null> {
     const result: unknown = await this.sql`
       SELECT
-        recent_pushes::double precision[] AS recent_pushes,
-        last_serialized,
-        last_pushed_at::double precision AS last_pushed_at
-      FROM push_records
+        body,
+        rendered_at::double precision AS rendered_at
+      FROM screens
       WHERE account_id = ${accountId}
     `;
     const row = rowsFrom(result)[0];
-    if (row === undefined) {
-      return { recentPushes: [], lastSerialized: null, lastPushedAt: null };
-    }
+    if (row === undefined) return null;
 
-    const parsed = parsePushRecord(row);
-    // Returning an empty record on drift would erase the durable rate-limit
-    // budget. Fail closed with a column-specific reason instead.
+    const parsed = parseScreen(row);
     if (!parsed.ok) throw new Error(parsed.reason);
     return parsed.value;
   }
 
-  async writePushRecord(accountId: string, record: PushRecord): Promise<void> {
-    const parsed = parsePushRecord({
-      recent_pushes: record.recentPushes,
-      last_serialized: record.lastSerialized,
-      last_pushed_at: record.lastPushedAt,
-    });
+  async writeScreen(accountId: string, screen: Screen): Promise<void> {
+    const parsed = parseScreen({ body: screen.body, rendered_at: screen.renderedAt });
     if (!parsed.ok) throw new Error(parsed.reason);
 
     await this.sql`
-      INSERT INTO push_records (
+      INSERT INTO screens (
         account_id,
-        recent_pushes,
-        last_serialized,
-        last_pushed_at
+        body,
+        rendered_at
       ) VALUES (
         ${accountId},
-        ${parsed.value.recentPushes},
-        ${parsed.value.lastSerialized},
-        ${parsed.value.lastPushedAt}
+        ${parsed.value.body},
+        ${parsed.value.renderedAt}
       )
       ON CONFLICT (account_id) DO UPDATE SET
-        recent_pushes = EXCLUDED.recent_pushes,
-        last_serialized = EXCLUDED.last_serialized,
-        last_pushed_at = EXCLUDED.last_pushed_at
+        body = EXCLUDED.body,
+        rendered_at = EXCLUDED.rendered_at
     `;
   }
 
   async deleteAccount(accountId: string): Promise<void> {
-    // The foreign key's ON DELETE CASCADE removes the push record in this same
-    // statement, so there is no partial-deletion window and no retained tombstone.
+    // The foreign key's ON DELETE CASCADE removes the rendered screen in this
+    // same statement, so there is no partial-deletion window or retained payload.
     await this.sql`
       DELETE FROM accounts
       WHERE id = ${accountId}

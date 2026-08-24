@@ -53,9 +53,9 @@ one judgement I cannot make from here. `plugin/_build/*.png` is what I think it
 looks like; the hardware is the authority.
 
 Later, and not blocking: deploying the hosted tier to Cloudflare and Neon. Read
-`hosted/README.md` first — two of the six hosted gates in `AGENTS.md` are open,
-which is fine for you testing with your own account and not fine for anyone
-else's token.
+`hosted/README.md` first — three of the six hosted gates in `AGENTS.md` are
+open, which is fine for you testing with your own account and not fine for
+anyone else's token.
 
 ## Done
 
@@ -102,10 +102,13 @@ is left is packaging rather than capability:
 encryption and the payload are done and bundle for Cloudflare. Nothing creates
 an account. What is left, in order:
 
-1. **A screen endpoint.** `GET /v1/screen?key=…` returning the payload for one
-   account, locked to TRMNL's published addresses. Small, because the payload
-   builder already exists. See D11: TRMNL pulls, so the hosted tier needs no
-   webhook URL, no push budget and no scheduler.
+1. ~~**A screen endpoint.**~~ **Done.** `GET /v1/screen` with an
+   `Authorization: Bearer <screen key>` header, serving a render the cron
+   stored. The key is a header rather than a query parameter because a
+   credential in a URL is recorded by every intermediary and by Cloudflare's own
+   per-request log. Verified against a real throwaway Postgres: the migration
+   applies, the delete cascade works, and a sealed token still opens after a
+   database round trip.
 2. **Sign-in and printer picker.** The web flow: authenticate, run the Bambu
    login the CLI already implements, list printers, choose, issue a key.
 3. **Identity.** A hosted provider with social and passwordless email, per D12.
@@ -116,8 +119,8 @@ an account. What is left, in order:
    afterthought.
 6. **Publish the recipe.** One click to install, one field to paste a key into.
 
-Steps 1 and 2 are the bulk of the remaining product. Steps 3 to 6 are gates
-rather than features.
+Step 2 is now the bulk of the remaining product. Steps 3 to 6 are gates rather
+than features, and step 5 is the one this project cannot launch without.
 
 ## Known unknowns
 

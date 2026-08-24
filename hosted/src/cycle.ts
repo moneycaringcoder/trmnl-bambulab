@@ -1,66 +1,54 @@
 /**
- * One hosted polling and push cycle, independent of the Workers runtime.
+ * One hosted polling and rendering cycle, independent of the Workers runtime.
  *
- * The clock, durable store and two network operations arrive as dependencies so
+ * The clock, durable store and network operation arrive as dependencies so
  * tests can exercise the real orchestration with an in-memory store and
- * controlled HTTP. This module reads Bambu Cloud and writes only to TRMNL; it
- * has no transport capable of sending anything to a printer.
+ * controlled HTTP. This module reads Bambu Cloud and stores a display render;
+ * it has no transport capable of sending anything to a printer or to TRMNL.
  */
 
 import { accept, emptyCoordinatorState, snapshotsFor } from "../../bridge/src/coordinator/merge.ts";
 import { buildWebhookPayload } from "../../bridge/src/push/payload.ts";
-import { decide, recordPush } from "../../bridge/src/push/scheduler.ts";
 import {
   pollCloudHttp,
   type PollOptions,
   type PollResult,
 } from "../../bridge/src/providers/cloud-http.ts";
 import { hostsFor } from "../../bridge/src/providers/bambu-cloud/hosts.ts";
-import {
-  pushPayload,
-  type PushResult,
-} from "../../bridge/src/setup/webhook-push.ts";
 import type { ProviderStatus } from "../../bridge/src/types.ts";
 import { openToken, type Keyring } from "./crypto.ts";
 import { accountTag } from "./log.ts";
 import type { Account, Store } from "./store.ts";
 
+const UTF8 = new TextEncoder();
+
 export interface CycleDependencies {
   store: Store;
   keyring: Keyring;
   pollCloud: (options: PollOptions) => Promise<PollResult>;
-  pushWebhook: (url: string, body: unknown) => Promise<PushResult>;
 }
 
 export interface CycleOptions {
   account: Account;
-  /** Epoch milliseconds, captured once for a consistent poll and decision. */
+  /** Epoch milliseconds, captured once for a consistent poll and render. */
   now: number;
 }
 
 export type CycleResult =
-  | { kind: "reauth_required" }
   | {
-      kind: "pushed";
-      reason: "changed" | "heartbeat";
+      kind: "rendered";
       cloud: ProviderStatus;
       bytes: number;
     }
+  | { kind: "reauth_required" }
   | {
-      kind: "push_refused";
-      reason: Exclude<PushResult, { ok: true }>["kind"];
-      cloud: ProviderStatus;
-      status: number;
-    }
-  | {
-      kind: "skipped";
-      reason: "unchanged" | "rate-limited" | "too-large" | "not-sendable";
+      kind: "payload_not_sendable";
       cloud: ProviderStatus;
       bytes: number;
     };
 
 /**
- * Services one account from encrypted token through an optional webhook push.
+ * Services one account from encrypted token through a stored screen render.
  *
  * The coordinator deliberately starts empty on every invocation. A cron isolate
  * has no memory of the previous run, so the hosted tier sees only what this one
@@ -82,8 +70,9 @@ export async function runCycle(
   });
 
   if (poll.status === "reauth_required") {
-    // Retrying a credential the cloud has refused cannot succeed. Stopping here
-    // avoids the rejecting loop that can get the user's account banned.
+    // Retrying a credential the cloud has refused cannot succeed. Keep the last
+    // good screen rather than replacing it with nothing; the endpoint reports
+    // its age, so its owner can see that the retained render is stale.
     await deps.store.markReauthRequired(account.id);
     return { kind: "reauth_required" };
   }
@@ -99,52 +88,35 @@ export async function runCycle(
     maxBytes: account.maxPayloadBytes,
     exportJobName: account.exportJobName,
   });
-  const pushRecord = await deps.store.readPushRecord(account.id);
-  const decision = decide(pushRecord, payload, {
-    now,
-    maxPushesPerHour: account.maxPushesPerHour,
-    maxPayloadBytes: account.maxPayloadBytes,
-  });
+  // The builder sheds against the larger webhook envelope, so its choices are
+  // conservative for this smaller flat form. Polling then puts merge variables
+  // at the root; there must be no `merge_variables` envelope for TRMNL to unwrap.
+  const body = JSON.stringify(payload.variables, (_key, value: unknown) =>
+    value === null ? undefined : value,
+  );
+  if (body === undefined) throw new Error("screen payload could not be serialized");
+  const bytes = UTF8.encode(body).byteLength;
 
-  if (decision.kind === "skip") {
+  if (bytes > account.maxPayloadBytes) {
     return {
-      kind: "skipped",
-      reason: decision.reason,
+      kind: "payload_not_sendable",
       cloud: poll.status,
-      bytes: payload.bytes,
+      bytes,
     };
   }
 
-  const pushed = await deps.pushWebhook(account.webhookUrl, payload.body);
-  if (!pushed.ok) {
-    // A refused push spent no TRMNL budget. Recording it would both invent a
-    // spend and suppress the retry that a transient refusal deserves.
-    return {
-      kind: "push_refused",
-      reason: pushed.kind,
-      cloud: poll.status,
-      status: pushed.status,
-    };
-  }
-
-  const next = recordPush(pushRecord, now, payload.serialized);
-  await deps.store.writePushRecord(account.id, {
-    recentPushes: [...next.recentPushes],
-    lastSerialized: next.lastSerialized,
-    lastPushedAt: next.lastPushedAt,
-  });
+  await deps.store.writeScreen(account.id, { body, renderedAt: now });
   return {
-    kind: "pushed",
-    reason: decision.reason,
+    kind: "rendered",
     cloud: poll.status,
-    bytes: payload.bytes,
+    bytes,
   };
 }
 
 /**
- * The Workers Free plan permits 50 external subrequests per invocation. Each
- * account has a worst case of two Bambu reads and one TRMNL push, so fifteen
- * accounts spend at most 45 and leave five requests of headroom.
+ * The batch claim costs one external request, then each account uses at most
+ * two Bambu reads and one screen write. Fifteen accounts therefore stay below
+ * the Workers Free plan's 50-external-subrequest ceiling.
  */
 export const MAX_ACCOUNTS_PER_CYCLE = 15;
 
@@ -199,5 +171,4 @@ export async function runDueAccounts(
 /** Production dependencies kept explicit so tests never need a Workers `env`. */
 export const networkDependencies = {
   pollCloud: pollCloudHttp,
-  pushWebhook: pushPayload,
 };

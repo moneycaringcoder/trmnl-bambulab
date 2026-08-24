@@ -1,27 +1,38 @@
+/**
+ * Hosted cycle behavior at the storage boundary.
+ *
+ * The network is a stubbed Bambu Cloud HTTP surface. It deliberately has no
+ * TRMNL branch: the hosted cycle renders into the store and refuses to acquire
+ * any capability that could write to a display or a printer.
+ */
+
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { sealToken, importKeyring, type Keyring } from "../src/crypto.ts";
+import {
+  importKeyring,
+  newScreenKey,
+  screenKeyFingerprint,
+  sealToken,
+  type Keyring,
+} from "../src/crypto.ts";
 import { networkDependencies, runCycle, runDueAccounts } from "../src/cycle.ts";
-import { createLogger } from "../src/log.ts";
 import { MemoryStore } from "../src/store-memory.ts";
 import type { Account } from "../src/store.ts";
-import { cycleLogDetail } from "../src/worker.ts";
-import { DEVICE_ID, syntheticWebhookUrl } from "../../bridge/test/synthetic-values.ts";
+import { DEVICE_ID } from "../../bridge/test/synthetic-values.ts";
 
 const NOW = Date.UTC(2026, 7, 24, 12, 0, 0);
 const TOKEN = ["synthetic", "cloud", "token"].join("-");
 
 interface StubOptions {
   cloudStatus?: number;
-  pushStatus?: number;
 }
 
-function stubNetwork(options: StubOptions = {}) {
-  let progress = 42;
-  let pushCount = 0;
+function stubCloud(options: StubOptions = {}) {
+  const progress = 42;
+  const calls = { count: 0 };
   const cloudStatus = options.cloudStatus ?? 200;
-  const pushStatus = options.pushStatus ?? 200;
 
   vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+    calls.count += 1;
     const url = input instanceof Request ? input.url : String(input);
     if (url.includes("/user/bind")) {
       if (cloudStatus !== 200) return new Response("refused", { status: cloudStatus });
@@ -57,16 +68,10 @@ function stubNetwork(options: StubOptions = {}) {
       );
     }
 
-    pushCount += 1;
-    return new Response("accepted", { status: pushStatus });
+    throw new Error("the hosted cycle made an unexpected outbound request");
   });
 
-  return {
-    pushCount: () => pushCount,
-    setProgress(value: number): void {
-      progress = value;
-    },
-  };
+  return calls;
 }
 
 async function keyring(): Promise<Keyring> {
@@ -76,23 +81,48 @@ async function keyring(): Promise<Keyring> {
   return importKeyring({ k1: encoded }, "k1");
 }
 
+interface AccountOptions {
+  suffix?: string;
+  maxPayloadBytes?: number;
+}
+
+interface CreatedAccount {
+  account: Account;
+  screenKey: string;
+}
+
 async function createAccount(
   store: MemoryStore,
   keys: Keyring,
-  suffix = "one",
-  maxPushesPerHour = 12,
-): Promise<Account> {
-  const id = ["account", suffix].join("-");
-  return store.createAccount({
+  options: AccountOptions = {},
+): Promise<CreatedAccount> {
+  const id = ["account", options.suffix ?? "one"].join("-");
+  const screenKey = newScreenKey();
+  const account = await store.createAccount({
     id,
     region: "global",
     token: await sealToken(keys, id, TOKEN),
+    screenKeyFingerprint: await screenKeyFingerprint(screenKey),
     deviceIds: [DEVICE_ID],
-    webhookUrl: syntheticWebhookUrl(),
-    maxPushesPerHour,
-    maxPayloadBytes: 2_000,
+    maxPayloadBytes: options.maxPayloadBytes ?? 2_000,
     exportJobName: false,
   });
+  return { account, screenKey };
+}
+
+function parseObject(text: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(text);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("the stored screen is not a JSON object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function containsNull(value: unknown): boolean {
+  if (value === null) return true;
+  if (Array.isArray(value)) return value.some((entry) => containsNull(entry));
+  if (typeof value !== "object") return false;
+  return Object.values(value).some((entry) => containsNull(entry));
 }
 
 afterEach(() => {
@@ -100,30 +130,40 @@ afterEach(() => {
 });
 
 describe("runCycle", () => {
-  it("polls and pushes a changed display", async () => {
+  it("stores a flat polling body with the webhook wire form's null omission", async () => {
     const store = new MemoryStore();
     const keys = await keyring();
-    const account = await createAccount(store, keys);
-    const network = stubNetwork();
+    const { account } = await createAccount(store, keys);
+    stubCloud();
 
     const result = await runCycle(
       { store, keyring: keys, ...networkDependencies },
       { account, now: NOW },
     );
+    const screen = await store.readScreen(account.id);
 
-    expect(result).toMatchObject({ kind: "pushed", reason: "changed", cloud: "connected" });
-    expect(network.pushCount()).toBe(1);
-    expect(await store.readPushRecord(account.id)).toMatchObject({
-      recentPushes: [NOW],
-      lastPushedAt: NOW,
-    });
+    expect(result).toMatchObject({ kind: "rendered", cloud: "connected" });
+    expect(screen).not.toBeNull();
+    if (screen === null) throw new Error("the successful cycle did not store a screen");
+    expect(screen.renderedAt).toBe(NOW);
+    const parsed = parseObject(screen.body);
+    expect(parsed.printers).toEqual([
+      expect.objectContaining({ name: "Synthetic printer", progress: 42 }),
+    ]);
+    expect(screen.body).not.toContain('"merge_variables"');
+    expect(containsNull(parsed)).toBe(false);
   });
 
-  it("marks a refused cloud credential and does not push", async () => {
+  it("marks a refused credential without replacing the last good screen", async () => {
     const store = new MemoryStore();
     const keys = await keyring();
-    const account = await createAccount(store, keys);
-    const network = stubNetwork({ cloudStatus: 401 });
+    const { account } = await createAccount(store, keys);
+    const previous = {
+      body: JSON.stringify({ v: 1, printers: [] }),
+      renderedAt: NOW - 5 * 60_000,
+    };
+    await store.writeScreen(account.id, previous);
+    stubCloud({ cloudStatus: 401 });
 
     const result = await runCycle(
       { store, keyring: keys, ...networkDependencies },
@@ -132,144 +172,109 @@ describe("runCycle", () => {
 
     expect(result).toEqual({ kind: "reauth_required" });
     expect((await store.accountById(account.id))?.reauthRequired).toBe(true);
-    expect(network.pushCount()).toBe(0);
-    expect(await store.readPushRecord(account.id)).toEqual({
-      recentPushes: [],
-      lastSerialized: null,
-      lastPushedAt: null,
-    });
+    expect(await store.readScreen(account.id)).toEqual(previous);
   });
 
-  it("does not record a webhook refusal as a push", async () => {
+  it("re-renders an unchanged poll without rate limiting", async () => {
     const store = new MemoryStore();
     const keys = await keyring();
-    const account = await createAccount(store, keys);
-    const before = await store.readPushRecord(account.id);
-    const network = stubNetwork({ pushStatus: 503 });
+    const { account } = await createAccount(store, keys);
+    const cloud = stubCloud();
+    const deps = { store, keyring: keys, ...networkDependencies };
+
+    const firstResult = await runCycle(deps, { account, now: NOW });
+    const firstScreen = await store.readScreen(account.id);
+    const secondResult = await runCycle(deps, {
+      account,
+      now: NOW + 5 * 60_000,
+    });
+    const secondScreen = await store.readScreen(account.id);
+
+    expect(firstResult.kind).toBe("rendered");
+    expect(secondResult.kind).toBe("rendered");
+    expect(firstScreen?.body).not.toBe(secondScreen?.body);
+    expect(secondScreen?.renderedAt).toBe(NOW + 5 * 60_000);
+    expect(cloud.count).toBe(4);
+  });
+
+  it("does not replace a screen with a payload over its configured bound", async () => {
+    const store = new MemoryStore();
+    const keys = await keyring();
+    const { account } = await createAccount(store, keys, { maxPayloadBytes: 1 });
+    const previous = {
+      body: JSON.stringify({ v: 1, printers: [] }),
+      renderedAt: NOW - 5 * 60_000,
+    };
+    await store.writeScreen(account.id, previous);
+    stubCloud();
 
     const result = await runCycle(
       { store, keyring: keys, ...networkDependencies },
       { account, now: NOW },
     );
 
-    expect(result).toMatchObject({ kind: "push_refused", reason: "server-error" });
-    expect(network.pushCount()).toBe(1);
-    expect(await store.readPushRecord(account.id)).toEqual(before);
-  });
-
-  it("skips an unchanged payload before calling the webhook", async () => {
-    const store = new MemoryStore();
-    const keys = await keyring();
-    const account = await createAccount(store, keys);
-    const network = stubNetwork();
-    const deps = { store, keyring: keys, ...networkDependencies };
-
-    await runCycle(deps, { account, now: NOW });
-    const result = await runCycle(deps, { account, now: NOW + 5 * 60_000 });
-
-    expect(result).toMatchObject({ kind: "skipped", reason: "unchanged" });
-    expect(network.pushCount()).toBe(1);
-  });
-
-  it("keeps the hourly ceiling in a PushRecord across cycles", async () => {
-    const store = new MemoryStore();
-    const keys = await keyring();
-    const account = await createAccount(store, keys, "limited", 2);
-    const network = stubNetwork();
-    const deps = { store, keyring: keys, ...networkDependencies };
-
-    network.setProgress(10);
-    expect((await runCycle(deps, { account, now: NOW })).kind).toBe("pushed");
-    network.setProgress(20);
-    expect((await runCycle(deps, { account, now: NOW + 30 * 60_000 })).kind).toBe("pushed");
-    network.setProgress(30);
-    const third = await runCycle(deps, { account, now: NOW + 35 * 60_000 });
-
-    expect(third).toMatchObject({ kind: "skipped", reason: "rate-limited" });
-    expect(network.pushCount()).toBe(2);
-    expect((await store.readPushRecord(account.id)).recentPushes).toEqual([
-      NOW,
-      NOW + 30 * 60_000,
-    ]);
+    expect(result).toMatchObject({
+      kind: "payload_not_sendable",
+      cloud: "connected",
+    });
+    expect(await store.readScreen(account.id)).toEqual(previous);
   });
 });
 
 describe("runDueAccounts", () => {
-  it("continues after one account cannot open its token", async () => {
+  it("continues after one account fails and returns one summary per account", async () => {
     const store = new MemoryStore();
     const keys = await keyring();
     const badId = ["account", "bad"].join("-");
+    const badScreenKey = newScreenKey();
     await store.createAccount({
       id: badId,
       region: "global",
       token: await sealToken(keys, ["different", "account"].join("-"), TOKEN),
+      screenKeyFingerprint: await screenKeyFingerprint(badScreenKey),
       deviceIds: [DEVICE_ID],
-      webhookUrl: syntheticWebhookUrl(),
-      maxPushesPerHour: 12,
       maxPayloadBytes: 2_000,
       exportJobName: false,
     });
-    await createAccount(store, keys, "good");
-    const network = stubNetwork();
+    const { account: goodAccount } = await createAccount(store, keys, {
+      suffix: "good",
+    });
+    stubCloud();
 
     const summaries = await runDueAccounts(
       { store, keyring: keys, ...networkDependencies },
       { now: NOW },
     );
 
-    expect(summaries.map((entry) => entry.result.kind)).toEqual(["failed", "pushed"]);
-    expect(network.pushCount()).toBe(1);
+    expect(summaries).toHaveLength(2);
+    expect(summaries.map((entry) => entry.result.kind)).toEqual(["failed", "rendered"]);
+    expect(
+      summaries.every((entry) => /^[0-9a-f]{16}$/.test(entry.accountTag)),
+    ).toBe(true);
+    expect(await store.readScreen(goodAccount.id)).not.toBeNull();
   });
 
-  // Deliberately routed through `cycleLogDetail`, the same function the Worker
-  // uses. An earlier version of this test built its own parallel detail object,
-  // which would have kept passing after someone added a field to the real one:
-  // exactly the regression it exists to catch.
-  it("returns and logs no token, webhook URL or device id", async () => {
+  it("returns and stores no plaintext credential or printer identifier", async () => {
     const store = new MemoryStore();
     const keys = await keyring();
-    const account = await createAccount(store, keys, "private");
-    stubNetwork();
+    const { account, screenKey } = await createAccount(store, keys, {
+      suffix: "private",
+    });
+    stubCloud();
+
     const summaries = await runDueAccounts(
       { store, keyring: keys, ...networkDependencies },
       { now: NOW },
     );
-    const lines: string[] = [];
-    const logger = createLogger("info", (line) => lines.push(line));
+    const screen = await store.readScreen(account.id);
+    expect(screen).not.toBeNull();
+    if (screen === null) throw new Error("the successful batch did not store a screen");
 
-    for (const summary of summaries) {
-      logger.info("account cycle completed", cycleLogDetail(summary));
-    }
-
-    const observable = `${JSON.stringify(summaries)}\n${lines.join("\n")}`;
-    expect(observable).not.toContain(TOKEN);
-    expect(observable).not.toContain(account.webhookUrl);
-    expect(observable).not.toContain(DEVICE_ID);
-    expect(observable).not.toContain(account.id);
-    expect(() => JSON.parse(lines[0] ?? "")).not.toThrow();
-  });
-
-  // Every value the Worker logs has to be a fixed token, a number, or the
-  // hashed tag. A field carrying anything else is how a credential reaches a
-  // log aggregator.
-  it("logs only scalars a person could not trace back to an account", async () => {
-    const store = new MemoryStore();
-    const keys = await keyring();
-    await createAccount(store, keys, "scalars");
-    stubNetwork();
-    const summaries = await runDueAccounts(
-      { store, keyring: keys, ...networkDependencies },
-      { now: NOW },
-    );
-
-    for (const summary of summaries) {
-      const detail = cycleLogDetail(summary);
-      expect(Object.keys(detail).sort()).toEqual(["account_tag", "bytes", "outcome", "reason"]);
-      for (const value of Object.values(detail)) {
-        expect(["string", "number", "boolean", "object"]).toContain(typeof value);
-        if (typeof value === "object") expect(value).toBeNull();
-      }
-      expect(detail.account_tag).toMatch(/^[0-9a-f]{16}$/);
+    for (const observable of [JSON.stringify(summaries), screen.body]) {
+      expect(observable).not.toContain(TOKEN);
+      expect(observable).not.toContain(DEVICE_ID);
+      expect(observable).not.toContain(screenKey);
+      expect(observable).not.toContain(account.id);
     }
   });
 });

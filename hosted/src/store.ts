@@ -2,15 +2,20 @@
  * What the hosted tier needs from a database, as an interface.
  *
  * An interface rather than a direct Neon dependency for two reasons. The cron
- * handler is the most consequential code in the hosted tier and it has to be
- * testable without a database. And the obligations in `AGENTS.md` — deletion
- * that actually deletes, no token in a log — are properties of an
- * implementation, so it helps to be able to write them down once, here, and
- * hold every implementation to them.
+ * and the screen endpoint are the most consequential code in the hosted tier
+ * and both have to be testable without a database. And the obligations in
+ * `AGENTS.md` — deletion that actually deletes, no token in a log — are
+ * properties of an implementation, so it helps to write them down once, here,
+ * and hold every implementation to them.
  *
  * A sealed token never becomes a plaintext token inside this layer. The store
  * moves opaque blobs; `crypto.ts` opens them, and only in the moment a request
  * needs one.
+ *
+ * There is no webhook URL anywhere in this file, and that is deliberate. TRMNL
+ * fetches from the hosted tier rather than being pushed to, so we never receive
+ * the URL that authorizes writing to someone's display, and therefore cannot
+ * leak it. See `docs/DECISIONS.md` D11.
  */
 
 import type { SealedToken } from "./crypto.ts";
@@ -18,21 +23,34 @@ import type { SealedToken } from "./crypto.ts";
 export type Region = "global" | "china";
 
 /**
- * One hosted user. `id` is ours and is the value bound into the token's
- * encryption, so it must never be reused after a deletion.
+ * One hosted user.
+ *
+ * `id` is ours and is bound into the token's encryption as additional data, so
+ * it must never be reused after a deletion and must never be derivable from
+ * anything the user hands out. `screenKeyFingerprint` is what the user *does*
+ * hand out, hashed: see `Store.accountByScreenKey`.
  */
 export interface Account {
   id: string;
   region: Region;
   token: SealedToken;
   /**
+   * SHA-256 of the screen key, hex. The key itself is shown to the user once,
+   * at enrolment, and never stored: a database leak then yields no working
+   * keys, only fingerprints that cannot be reversed into one.
+   */
+  screenKeyFingerprint: string;
+  /**
    * The printers this account chose. Device ids are printer serials, so they
    * are identifiers: never logged, never sent to TRMNL.
    */
   deviceIds: string[];
-  /** A credential: its last path segment authorizes writing to a display. */
-  webhookUrl: string;
-  maxPushesPerHour: number;
+  /**
+   * An upper bound on the rendered payload. TRMNL documents no size limit for
+   * a polled response, unlike the 2 kB webhook ceiling, but a bound still earns
+   * its keep: it is what makes the payload builder shed detail in a defined
+   * order instead of emitting something unbounded.
+   */
   maxPayloadBytes: number;
   exportJobName: boolean;
   /**
@@ -44,25 +62,38 @@ export interface Account {
 }
 
 /**
- * The scheduler's state between cron invocations.
+ * The rendered payload, as the screen endpoint will serve it.
  *
- * Each cron run is a fresh isolate, so this has to be durable or the rate
- * limiter forgets its budget every five minutes and the twelve-per-hour ceiling
- * stops meaning anything.
+ * This exists because the cron writes and the endpoint reads, which is the
+ * central decision in the polling design. TRMNL fetches on a schedule the
+ * *user* chooses, so an endpoint that read Bambu on demand would let one user's
+ * refresh setting decide how hard we hit Bambu, would put two cloud round-trips
+ * inside TRMNL's request timeout, and would let anyone holding a key generate
+ * load on Bambu at will. Serving a stored render makes Bambu's load a function
+ * of our cron alone.
  */
-export interface PushRecord {
-  /** Epoch milliseconds, trailing hour only. */
-  recentPushes: number[];
-  /** The last body successfully accepted, for change detection. */
-  lastSerialized: string | null;
-  lastPushedAt: number | null;
+export interface Screen {
+  /** The exact JSON body to return, merge variables at the root. */
+  body: string;
+  /** Bridge clock when it was rendered, epoch milliseconds. */
+  renderedAt: number;
 }
 
 export interface Store {
-  /** Accounts the cron should service, oldest-serviced first. */
+  /** Accounts the cron should service, least-recently-serviced first. */
   dueAccounts(limit: number): Promise<Account[]>;
 
   accountById(id: string): Promise<Account | null>;
+
+  /**
+   * Looks an account up by the hash of a presented screen key.
+   *
+   * Takes a fingerprint rather than a key so that no implementation is ever
+   * handed the live credential, and so the lookup is a single indexed equality
+   * test rather than a scan. Returns null for an unknown fingerprint, and the
+   * caller must answer an unknown key and a revoked one identically.
+   */
+  accountByScreenKey(fingerprint: string): Promise<Account | null>;
 
   /** Creates an account and returns it, with the token already sealed. */
   createAccount(account: Omit<Account, "reauthRequired">): Promise<Account>;
@@ -70,19 +101,23 @@ export interface Store {
   /** Replaces a token in place, for a re-authentication. Clears the flag. */
   replaceToken(accountId: string, token: SealedToken): Promise<void>;
 
+  /** Replaces the screen key, which is how a leaked key is retired. */
+  replaceScreenKey(accountId: string, fingerprint: string): Promise<void>;
+
   /** Records that the cloud refused this token, so the cron stops trying. */
   markReauthRequired(accountId: string): Promise<void>;
 
-  readPushRecord(accountId: string): Promise<PushRecord>;
+  /** Null before the cron has rendered anything for this account. */
+  readScreen(accountId: string): Promise<Screen | null>;
 
-  writePushRecord(accountId: string, record: PushRecord): Promise<void>;
+  writeScreen(accountId: string, screen: Screen): Promise<void>;
 
   /**
    * Removes the account and everything belonging to it.
    *
    * `AGENTS.md` requires that deletion actually deletes, so this is not a flag:
-   * the row and its push record go, and the implementation must not keep a
-   * tombstone carrying the token, the webhook URL, or a device id.
+   * the row and its rendered screen go, and the implementation must not keep a
+   * tombstone carrying the token, a device id, or a key fingerprint.
    */
   deleteAccount(accountId: string): Promise<void>;
 }

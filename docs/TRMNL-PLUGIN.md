@@ -4,9 +4,52 @@ Research date: 2026-08-22.
 
 ## Plugin type
 
-Use a TRMNL Private Plugin with the Webhook strategy for v1. The local bridge sends JSON to the plugin's generated webhook URL. TRMNL places values under `merge_variables`, then Liquid markup renders them.[2][3]
+Two strategies, one per tier, because the two tiers sit in different places on
+the network.
 
-Do not use Polling for the first version. TRMNL cannot reach a private LAN printer, and exposing a polling API would add hosting, authentication, and storage with no product benefit.
+**Self-hosted uses Webhook.** The bridge runs on the user's own machine and
+POSTs to their Private Plugin's webhook URL. TRMNL cannot reach a machine on
+someone's home network, so the bridge has to do the reaching.[2][3]
+
+**Hosted uses Polling.** TRMNL fetches from a Worker on the public internet,
+which it can reach perfectly well. This document originally ruled polling out
+for the same reason the self-hosted tier still uses webhooks, and that reason
+does not apply to a Worker. Pulling also means we never receive the user's
+webhook URL, which is a bearer credential for their display. See
+`docs/DECISIONS.md` D11.
+
+The two strategies differ in one detail that will catch you out. The webhook
+body wraps its variables: `{"merge_variables": {...}}`. A polled response puts
+them at the **root**: `{"v": 1, "printers": [...]}`. TRMNL's own troubleshooting
+says as much — "we suggest putting relevant merge variables in the root node of
+your payload".[2]
+
+### Polling authentication, and why the key is a header
+
+The hosted tier's whole authentication story depends on one TRMNL capability,
+so it is recorded here rather than left in a code comment: **a Polling plugin
+can interpolate a custom form field into its request headers.**
+
+TRMNL's Private Plugins guide states it directly — "your polling headers may
+access values from custom form fields via `##{{ form_field_keyname }}`
+interpolation" — and gives the example `authorization=bearer ##{{ api_key }}`.
+Headers are assigned with `=` and separated with `&`, and a literal `=` inside a
+value is percent-encoded.[2]
+
+That is what lets the screen key travel in an `Authorization: Bearer` header
+instead of a query string. It matters because a credential in a URL is recorded
+by every intermediary's access log and by Cloudflare's own per-request
+invocation log. If this capability ever went away, the hosted tier would have no
+way to authenticate that does not write the key into a log, so it is worth
+noticing if TRMNL changes it.
+
+The same interpolation works in the polling URL and body. Global variables such
+as `##{{ trmnl.user.first_name }}` are available in all three.[2]
+
+A polled endpoint can also be locked to TRMNL's own server addresses, published
+at `https://trmnl.com/api/ips`.[2] The hosted tier reads that list from a
+`TRMNL_ALLOWED_IPS` variable and ships it empty, because shipping a guessed
+address list would lock TRMNL out of every account at once.
 
 ## Webhook constraints
 
@@ -211,11 +254,11 @@ Before publishing:
 
 ## Sources
 
-[2] https://help.usetrmnl.com/en/articles/9510536-private-plugins — TRMNL Private Plugins
-[3] https://docs.usetrmnl.com/go/private-plugins/webhooks.md — TRMNL Private Plugin Webhooks
-[5] https://help.usetrmnl.com/en/articles/10671186-liquid-101 — TRMNL Liquid 101
-[6] https://docs.usetrmnl.com/go/private-plugins/templates.md — TRMNL Screen Templating
+[2] https://help.trmnl.com/en/articles/9510536-private-plugins — TRMNL Private Plugins
+[3] https://docs.trmnl.com/go/private-plugins/webhooks.md — TRMNL Private Plugin Webhooks
+[5] https://help.trmnl.com/en/articles/10671186-liquid-101 — TRMNL Liquid 101
+[6] https://docs.trmnl.com/go/private-plugins/templates.md — TRMNL Screen Templating
 [7] https://github.com/usetrmnl/trmnlp — TRMNL trmnlp local development server
-[8] https://usetrmnl.com/framework — TRMNL Framework
-[9] https://help.usetrmnl.com/en/articles/10122094-plugin-recipes — TRMNL Plugin Recipes
-[10] https://help.usetrmnl.com/en/articles/10513740-custom-plugin-form-builder — TRMNL Custom Plugin Form Builder
+[8] https://trmnl.com/framework — TRMNL Framework
+[9] https://help.trmnl.com/en/articles/10122094-plugin-recipes — TRMNL Plugin Recipes
+[10] https://help.trmnl.com/en/articles/10513740-custom-plugin-form-builder — TRMNL Custom Plugin Form Builder

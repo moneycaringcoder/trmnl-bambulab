@@ -1,6 +1,6 @@
 # TRMNL plugin contract and rendering
 
-Research date: 2026-08-22.
+Research date: 2026-08-24.
 
 ## Plugin type
 
@@ -239,18 +239,47 @@ Review third-party `transform.*` files before running cloned plugins: current `t
 
 Do not run `trmnlp push` until a human has supplied and approved the target TRMNL plugin ID and credentials. Ensure `src/settings.yml` has the intended `id`; the tool warns that pushing without it can create a new plugin instead of updating one.[7]
 
-## Publishing later
+## Distribution
 
-Recipes are the recommended shareable form when code can live inside TRMNL and does not require the author to host user data.[9] This project still needs a local bridge, so recipe publication requires a clean installer story where each user's bridge pushes to their own webhook.
+**Hosted uses an Unlisted Recipe.** Recipes provide a one-click installation of
+a private plugin. An Unlisted Recipe skips moderation and produces a shareable
+link immediately, so each hosted user does not have to reconstruct the Polling
+plugin by hand.[9]
 
-Before publishing:
+The Recipe declares the documented Polling settings (`strategy: polling`,
+`refresh_interval`, `polling_url`, `polling_headers`, and `polling_verb: GET`)
+and one custom field. TRMNL requires `keyname`, `name`, and `field_type` for a
+form field, and `password` is a supported field type.[10][11]
 
-- all four layouts complete
-- no author-controlled data relay required
-- setup docs for A1/A1 mini
-- secret handling audited
-- recipe form fields contain no shared credentials
-- master recipe tested on clone before updates, because installed recipes can receive author changes automatically.[9][10]
+```yaml
+custom_fields:
+- keyname: screen_key
+  name: Screen key
+  field_type: password
+  help_text: Copy this from the hosted enrolment page. You can rotate it there.
+```
+
+Polling headers assign a header with `=` and separate multiple headers with
+`&`. The screen key uses TRMNL's documented `##{{ }}` custom-field prefix
+exactly; its header setting is:[2]
+
+```yaml
+polling_headers: 'authorization=bearer ##{{ screen_key }}'
+```
+
+The hosted cron renders every five minutes, but a default TRMNL account has a
+15-minute minimum refresh; TRMNL+ can reach five minutes. The Recipe therefore
+declares `refresh_interval: 15`: a standard display can skip two intermediate
+hosted renders, while TRMNL+ owners may choose the faster cadence.[11][12]
+
+**Unverified:** TRMNL documents adding custom fields to a Recipe and using their
+values, but does not say whether those fields are prompted during Recipe
+installation or configured afterwards. Do not promise either flow until it has
+been observed.[9][10]
+
+Self-hosted remains a separately created Private Plugin using the Webhook
+strategy; it does not use the Recipe's Polling URL, authorization header, or
+screen-key field.[2]
 
 ## Sources
 
@@ -262,3 +291,5 @@ Before publishing:
 [8] https://trmnl.com/framework — TRMNL Framework
 [9] https://help.trmnl.com/en/articles/10122094-plugin-recipes — TRMNL Plugin Recipes
 [10] https://help.trmnl.com/en/articles/10513740-custom-plugin-form-builder — TRMNL Custom Plugin Form Builder
+[11] https://help.trmnl.com/en/articles/10542599-importing-and-exporting-private-plugins — TRMNL Private Plugin import/export settings
+[12] https://help.trmnl.com/en/articles/10113695-how-refresh-rates-work — TRMNL refresh rates

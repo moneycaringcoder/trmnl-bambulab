@@ -28,7 +28,7 @@ export type Region = "global" | "china";
  * `id` is ours and is bound into the token's encryption as additional data, so
  * it must never be reused after a deletion and must never be derivable from
  * anything the user hands out. `screenKeyFingerprint` is what the user *does*
- * hand out, hashed: see `Store.accountByScreenKey`.
+ * hand out, hashed: see `Store.pollByScreenKey`.
  */
 export interface Account {
   id: string;
@@ -40,6 +40,19 @@ export interface Account {
    * keys, only fingerprints that cannot be reversed into one.
    */
   screenKeyFingerprint: string;
+  /**
+   * A keyed tag of the identity-provider subject that owns this account.
+   *
+   * Never the subject itself. See `ownerTag` in `crypto.ts` for why it is an
+   * HMAC rather than a hash: the provider does not document the entropy of the
+   * value it puts in `sub`, so a plain digest of it could be reversible.
+   *
+   * Unique across accounts, so one signed-in person has one account. That is a
+   * product decision as much as a constraint: this plugin shows up to three
+   * printers on one screen, so a second account for the same person would be a
+   * second display, not a feature anyone asked for.
+   */
+  ownerTag: string;
   /**
    * The printers this account chose. Device ids are printer serials, so they
    * are identifiers: never logged, never sent to TRMNL.
@@ -79,6 +92,16 @@ export interface Screen {
   renderedAt: number;
 }
 
+/**
+ * The account and stored render resolved for one screen poll.
+ *
+ * `screen` is null before the cron has produced its first render.
+ */
+export interface PollResult {
+  account: Account;
+  screen: Screen | null;
+}
+
 export interface Store {
   /** Accounts the cron should service, least-recently-serviced first. */
   dueAccounts(limit: number): Promise<Account[]>;
@@ -86,14 +109,34 @@ export interface Store {
   accountById(id: string): Promise<Account | null>;
 
   /**
-   * Looks an account up by the hash of a presented screen key.
+   * Resolves an account and its stored render by the hash of a presented screen key.
    *
    * Takes a fingerprint rather than a key so that no implementation is ever
    * handed the live credential, and so the lookup is a single indexed equality
-   * test rather than a scan. Returns null for an unknown fingerprint, and the
-   * caller must answer an unknown key and a revoked one identically.
+   * test rather than a scan. Returns null for an unknown fingerprint. This must
+   * not filter on `reauth_required`: a refused token should still serve its last
+   * render.
    */
-  accountByScreenKey(fingerprint: string): Promise<Account | null>;
+  pollByScreenKey(fingerprint: string): Promise<PollResult | null>;
+
+  /**
+   * Finds the account belonging to a signed-in person.
+   *
+   * Takes every tag a subject could be stored under rather than one, because a
+   * tag cannot be recomputed after a key rotation without the original subject,
+   * which is deliberately not kept. Matching any candidate is what keeps an
+   * account enrolled under an older key reachable. See `ownerTagCandidates`.
+   */
+  accountByOwner(candidateTags: readonly string[]): Promise<Account | null>;
+
+  /**
+   * Replaces the chosen printers.
+   *
+   * An empty list is legitimate and means enrolled but not yet configured: the
+   * cron has nothing to render and the screen endpoint has nothing to serve.
+   * Implementations must not treat it as a deletion.
+   */
+  replacePrinters(accountId: string, deviceIds: readonly string[]): Promise<void>;
 
   /** Creates an account and returns it, with the token already sealed. */
   createAccount(account: Omit<Account, "reauthRequired">): Promise<Account>;

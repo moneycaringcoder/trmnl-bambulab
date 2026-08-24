@@ -110,6 +110,37 @@ export function beginPasswordLogin(account: string, password: string): AuthTrans
   };
 }
 
+/**
+ * Starts a login that never involves a password.
+ *
+ * Bambu's `sendemail/code` endpoint takes an address and a `codeLogin` type,
+ * and the login endpoint accepts `{ account, code }`, so the emailed code is a
+ * complete credential on its own rather than only a second factor. That makes a
+ * password avoidable, which matters most for the hosted tier: a hosted sign-in
+ * that asked for a Bambu password would put it through our server for no gain,
+ * and `AGENTS.md` is emphatic that a password is used once and discarded. Not
+ * receiving one at all is strictly better than discarding one carefully.
+ *
+ * The bridge keeps offering the password entry point, because it runs on the
+ * user's own machine and one request beats waiting for an email.
+ *
+ * **Unverified.** The owner's real sign-in reached this endpoint only after a
+ * password attempt had already returned `verifyCode`. Whether Bambu will email
+ * a code with no prior password request is untested against a real account. If
+ * it refuses, the hosted flow needs the password after all, and that is a
+ * product decision rather than a bug here.
+ */
+export function beginCodeLogin(account: string): AuthTransition {
+  return {
+    phase: { kind: "await-email-code", account },
+    request: { path: SEND_EMAIL_CODE_PATH, body: { email: account, type: "codeLogin" } },
+    prompt: {
+      field: "email-code",
+      message: `Bambu Cloud is emailing a sign-in code to that address. ${ONE_USE}`,
+    },
+  };
+}
+
 export function advance(phase: AuthPhase, event: AuthEvent): AuthTransition {
   if (phase.kind === "await-login-result" && event.kind === "login-result") {
     return afterFirstLogin(phase.account, event.response);

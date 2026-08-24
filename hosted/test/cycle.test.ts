@@ -17,6 +17,7 @@ import {
 import { networkDependencies, runCycle, runDueAccounts } from "../src/cycle.ts";
 import { MemoryStore } from "../src/store-memory.ts";
 import type { Account } from "../src/store.ts";
+import { ownerTagForTest } from "./helpers.ts";
 import { DEVICE_ID } from "../../bridge/test/synthetic-values.ts";
 
 const NOW = Date.UTC(2026, 7, 24, 12, 0, 0);
@@ -100,6 +101,7 @@ async function createAccount(
   const screenKey = newScreenKey();
   const account = await store.createAccount({
     id,
+    ownerTag: ownerTagForTest(),
     region: "global",
     token: await sealToken(keys, id, TOKEN),
     screenKeyFingerprint: await screenKeyFingerprint(screenKey),
@@ -229,6 +231,7 @@ describe("runDueAccounts", () => {
     const badScreenKey = newScreenKey();
     await store.createAccount({
       id: badId,
+      ownerTag: ownerTagForTest(),
       region: "global",
       token: await sealToken(keys, ["different", "account"].join("-"), TOKEN),
       screenKeyFingerprint: await screenKeyFingerprint(badScreenKey),

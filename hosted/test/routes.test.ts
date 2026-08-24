@@ -1,0 +1,628 @@
+/**
+ * The authenticated surface.
+ *
+ * Every test here goes through a real `SessionVerifier` with real Ed25519
+ * signatures, because the property that matters most on this surface is that an
+ * unauthenticated caller cannot reach an account. A fake verifier would make
+ * that property untestable and every one of these tests would still pass.
+ */
+
+import { beforeEach, describe, expect, it } from "vitest";
+import { importKeyring, openToken, ownerTag, screenKeyFingerprint, type Keyring } from "../src/crypto.ts";
+import type { DiscoveredPrinter } from "../src/enrol.ts";
+import {
+  deleteAccount,
+  getAccount,
+  postKeyRotation,
+  postPrinters,
+  postSession,
+  postSignInCode,
+  type EnrolPorts,
+  type RouteResult,
+} from "../src/routes.ts";
+import type { RateLimiter } from "../src/screen.ts";
+import { SessionVerifier } from "../src/session.ts";
+import { MemoryStore } from "../src/store-memory.ts";
+import type { Account, Region } from "../src/store.ts";
+
+const ORIGIN = "https://ep-routes.example";
+const BASE = `${ORIGIN}/db/auth`;
+const NOW = Date.UTC(2026, 7, 24, 12, 0, 0);
+const EMAIL = "owner@example.com";
+const CODE = "418418";
+
+/** Two printers, with serial-shaped ids assembled at runtime, never pasted. */
+function printerFixtures(): DiscoveredPrinter[] {
+  const serial = (suffix: string) => `${"0".repeat(8)}${suffix}`;
+  return [
+    { deviceId: serial("AAA"), name: "Workshop", online: true, model: "N2S" },
+    { deviceId: serial("BBB"), name: "Spare", online: false, model: "N1" },
+  ];
+}
+
+interface Harness {
+  ports: EnrolPorts;
+  store: MemoryStore;
+  keyring: Keyring;
+  auth: string;
+  otherAuth: string;
+  printers: DiscoveredPrinter[];
+  sent: { region: Region; email: string }[];
+  completed: { region: Region; email: string; code: string }[];
+  /** Fails the next Bambu call with this outcome. */
+  failWith(failure: { kind: "refused" | "cloud-unavailable" | "no-printers" }): void;
+  listFails(): void;
+}
+
+interface Signer {
+  jwk: Record<string, unknown>;
+  token(subject: string): Promise<string>;
+}
+
+function b64u(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+const seg = (value: unknown) => b64u(new TextEncoder().encode(JSON.stringify(value)));
+
+async function newSigner(): Promise<Signer> {
+  // `generateKey` is typed as returning a key or a pair; Ed25519 always yields
+  // a pair, and the union is not narrowable from the arguments.
+  const pair = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, [
+    "sign",
+    "verify",
+  ])) as CryptoKeyPair;
+  const publicJwk = await crypto.subtle.exportKey("jwk", pair.publicKey);
+
+  return {
+    jwk: { kty: "OKP", crv: "Ed25519", x: publicJwk.x, kid: "k1" },
+    async token(subject) {
+      const signing = `${seg({ alg: "EdDSA", kid: "k1" })}.${seg({
+        iss: ORIGIN,
+        aud: ORIGIN,
+        sub: subject,
+        iat: Math.floor(NOW / 1000),
+        exp: Math.floor(NOW / 1000) + 900,
+      })}`;
+      const signature = await crypto.subtle.sign(
+        "Ed25519",
+        pair.privateKey,
+        new TextEncoder().encode(signing),
+      );
+      return `Bearer ${signing}.${b64u(new Uint8Array(signature))}`;
+    },
+  };
+}
+
+async function harness(options: { limiter?: RateLimiter } = {}): Promise<Harness> {
+  const store = new MemoryStore();
+  const keyring = await importKeyring({ k1: await generateKeyBase64() }, "k1");
+  const signer = await newSigner();
+  const verifier = new SessionVerifier({
+    baseUrl: BASE,
+    fetchImpl: (async () => Response.json({ keys: [signer.jwk] })) as typeof fetch,
+  });
+
+  const printers = printerFixtures();
+  const sent: { region: Region; email: string }[] = [];
+  const completed: { region: Region; email: string; code: string }[] = [];
+  let nextFailure: { kind: "refused" | "cloud-unavailable" | "no-printers" } | null = null;
+  let listBroken = false;
+
+  const ports: EnrolPorts = {
+    store,
+    keyring,
+    verifier,
+    // Always supplied, because the type requires it: a route whose only abuse
+    // bound could be omitted is the shape the production type now forbids.
+    limiter: options.limiter ?? { async limit() { return { success: true }; } },
+    async requestSignInCode(region, email) {
+      sent.push({ region, email });
+      if (nextFailure !== null) {
+        const failure = { ...nextFailure, guidance: "g" };
+        nextFailure = null;
+        return { ok: false, failure };
+      }
+      return { ok: true };
+    },
+    async completeSignIn(region, email, code) {
+      completed.push({ region, email, code });
+      if (nextFailure !== null) {
+        const failure = { ...nextFailure, guidance: "g" };
+        nextFailure = null;
+        return { ok: false, failure };
+      }
+      return { ok: true, accessToken: `cloud-token-${completed.length}`, printers };
+    },
+    async printersFor() {
+      if (listBroken) throw new Error("cloud unavailable");
+      return printers;
+    },
+    now: NOW,
+  };
+
+  return {
+    ports,
+    store,
+    keyring,
+    auth: await signer.token("subject-one"),
+    otherAuth: await signer.token("subject-two"),
+    printers,
+    sent,
+    completed,
+    failWith(failure) {
+      nextFailure = failure;
+    },
+    listFails() {
+      listBroken = true;
+    },
+  };
+}
+
+/** A 32-byte key, base64, generated rather than pasted. */
+async function generateKeyBase64(): Promise<string> {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+/** Runs the whole flow and returns the issued key plus the stored account. */
+async function enrolFully(h: Harness): Promise<{ screenKey: string; account: Account }> {
+  await postSignInCode(h.ports, h.auth, { region: "global", email: EMAIL });
+  await postSession(h.ports, h.auth, { region: "global", email: EMAIL, code: CODE });
+  const issued = await postPrinters(h.ports, h.auth, {
+    deviceIds: [h.printers[0]?.deviceId],
+  });
+  if (issued.kind !== "key-issued") throw new Error(`enrolment failed: ${issued.kind}`);
+
+  const account = await h.store.pollByScreenKey(await screenKeyFingerprint(issued.screenKey));
+  if (account === null) throw new Error("the issued key does not resolve to an account");
+  return { screenKey: issued.screenKey, account: account.account };
+}
+
+let h: Harness;
+beforeEach(async () => {
+  h = await harness();
+});
+
+describe("the whole flow", () => {
+  it("signs in, lists printers, and issues one key", async () => {
+    const asked = await postSignInCode(h.ports, h.auth, { region: "global", email: EMAIL });
+    expect(asked).toEqual({ kind: "done" });
+    expect(h.sent).toEqual([{ region: "global", email: EMAIL }]);
+
+    const session = await postSession(h.ports, h.auth, {
+      region: "global",
+      email: EMAIL,
+      code: CODE,
+    });
+    if (session.kind !== "printers") throw new Error("sign-in did not return printers");
+    expect(session.printers.map((printer) => printer.name)).toEqual(["Workshop", "Spare"]);
+
+    const issued = await postPrinters(h.ports, h.auth, {
+      deviceIds: [h.printers[1]?.deviceId],
+    });
+    if (issued.kind !== "key-issued") throw new Error("no key was issued");
+    // 43 base64url characters: the shape the screen endpoint's free check wants.
+    expect(issued.screenKey).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    // The key resolves, and the chosen printer is the one stored.
+    const poll = await h.store.pollByScreenKey(await screenKeyFingerprint(issued.screenKey));
+    expect(poll?.account.deviceIds).toEqual([h.printers[1]?.deviceId]);
+  });
+
+  it("stores the cloud token sealed, and can open it again", async () => {
+    const { account } = await enrolFully(h);
+
+    // The regression this pins: an earlier version computed the sealed token and
+    // never wrote it, so enrolment "succeeded" with an account the cron could
+    // not use.
+    expect(account.token.ciphertext.length).toBeGreaterThan(0);
+    await expect(openToken(h.keyring, account.id, account.token)).resolves.toBe("cloud-token-1");
+  });
+
+  it("keeps one account per person across repeated sign-ins", async () => {
+    const first = await enrolFully(h);
+    await postSession(h.ports, h.auth, { region: "global", email: EMAIL, code: CODE });
+    const again = await postPrinters(h.ports, h.auth, {
+      deviceIds: [h.printers[0]?.deviceId],
+    });
+    if (again.kind !== "key-issued") throw new Error("re-enrolment did not issue a key");
+
+    const tags = [await ownerTag(h.keyring.current.tagKey, "subject-one")];
+    const account = await h.store.accountByOwner(tags);
+    expect(account?.id).toBe(first.account.id);
+    // A new key, and the old one stops working: rotation, not accumulation.
+    expect(again.screenKey).not.toBe(first.screenKey);
+    await expect(
+      h.store.pollByScreenKey(await screenKeyFingerprint(first.screenKey)),
+    ).resolves.toBeNull();
+  });
+
+  it("re-authenticating replaces the token and clears the refusal flag", async () => {
+    const { account } = await enrolFully(h);
+    await h.store.markReauthRequired(account.id);
+    expect((await h.store.accountById(account.id))?.reauthRequired).toBe(true);
+
+    await postSession(h.ports, h.auth, { region: "global", email: EMAIL, code: CODE });
+
+    const after = await h.store.accountById(account.id);
+    expect(after?.reauthRequired).toBe(false);
+    await expect(openToken(h.keyring, account.id, after?.token ?? account.token)).resolves.toBe(
+      "cloud-token-2",
+    );
+  });
+});
+
+describe("authentication", () => {
+  // The property the whole surface rests on. Each route is listed explicitly
+  // rather than looped over a registry, so adding a route without adding it here
+  // is visible in review.
+  it("refuses every route without a valid session", async () => {
+    const { account } = await enrolFully(h);
+    const body = { region: "global", email: EMAIL, code: CODE, deviceIds: [] };
+
+    for (const header of [null, "", "Bearer nonsense", "Basic abc"]) {
+      const results: RouteResult[] = [
+        await postSignInCode(h.ports, header, body),
+        await postSession(h.ports, header, body),
+        await postPrinters(h.ports, header, body),
+        await postKeyRotation(h.ports, header),
+        await getAccount(h.ports, header),
+        await deleteAccount(h.ports, header),
+      ];
+      for (const result of results) expect(result.kind).toBe("unauthenticated");
+    }
+
+    // Nothing was touched by any of that.
+    expect(await h.store.accountById(account.id)).not.toBeNull();
+  });
+
+  it("refuses when identity is not provisioned, even with a real token", async () => {
+    const unconfigured: EnrolPorts = {
+      ...h.ports,
+      verifier: new SessionVerifier({ baseUrl: undefined }),
+    };
+
+    expect((await getAccount(unconfigured, h.auth)).kind).toBe("unauthenticated");
+    expect((await postSignInCode(unconfigured, h.auth, { region: "global", email: EMAIL })).kind).toBe(
+      "unauthenticated",
+    );
+    // And it did not reach Bambu on the way to refusing.
+    expect(h.sent).toEqual([]);
+  });
+
+  // One signed-in person must not be able to read or change another's account.
+  it("keeps two identities separate", async () => {
+    const mine = await enrolFully(h);
+
+    expect((await getAccount(h.ports, h.otherAuth)).kind).toBe("no-account");
+    expect((await postKeyRotation(h.ports, h.otherAuth)).kind).toBe("no-account");
+    expect((await deleteAccount(h.ports, h.otherAuth)).kind).toBe("no-account");
+
+    // Mine is untouched, and its key still works.
+    await expect(
+      h.store.pollByScreenKey(await screenKeyFingerprint(mine.screenKey)),
+    ).resolves.not.toBeNull();
+  });
+});
+
+describe("what a route will not say", () => {
+  // Whether an address has a Bambu account is not ours to disclose. A route that
+  // reported Bambu's refusal would be a way to test addresses against Bambu.
+  it("answers a refused address exactly as an accepted one", async () => {
+    const accepted = await postSignInCode(h.ports, h.auth, { region: "global", email: EMAIL });
+    h.failWith({ kind: "refused" });
+    const refused = await postSignInCode(h.ports, h.auth, {
+      region: "global",
+      email: "unknown@example.com",
+    });
+
+    expect(refused).toEqual(accepted);
+  });
+
+  // But a real outage is worth reporting, because retrying is the right advice
+  // and silence would look like success.
+  it("does report that Bambu is unreachable", async () => {
+    h.failWith({ kind: "cloud-unavailable" });
+    const result = await postSignInCode(h.ports, h.auth, { region: "global", email: EMAIL });
+
+    expect(result.kind).toBe("upstream");
+  });
+
+  it("never returns a cloud token or an owner tag", async () => {
+    const asked = await postSignInCode(h.ports, h.auth, { region: "global", email: EMAIL });
+    const session = await postSession(h.ports, h.auth, {
+      region: "global",
+      email: EMAIL,
+      code: CODE,
+    });
+    const issued = await postPrinters(h.ports, h.auth, {
+      deviceIds: [h.printers[0]?.deviceId],
+    });
+    const account = await getAccount(h.ports, h.auth);
+    const tag = await ownerTag(h.keyring.current.tagKey, "subject-one");
+
+    for (const result of [asked, session, issued, account]) {
+      const serialized = JSON.stringify(result);
+      expect(serialized).not.toContain("cloud-token");
+      expect(serialized).not.toContain(tag);
+      expect(serialized).not.toContain("subject-one");
+    }
+  });
+});
+
+describe("input", () => {
+  it("refuses a region it does not recognise", async () => {
+    for (const region of ["", "eu", "GLOBAL", null, 1]) {
+      const result = await postSignInCode(h.ports, h.auth, { region, email: EMAIL });
+      expect(result.kind).toBe("invalid");
+    }
+    // An unrecognised region would point the sign-in at a host we never meant to
+    // talk to, so nothing was sent.
+    expect(h.sent).toEqual([]);
+  });
+
+  it("refuses a code that is not a code", async () => {
+    for (const code of ["", "abcdef", "12", "1".repeat(11), " 1234 5 ", null]) {
+      const result = await postSession(h.ports, h.auth, {
+        region: "global",
+        email: EMAIL,
+        code,
+      });
+      expect(result.kind).toBe("invalid");
+    }
+    expect(h.completed).toEqual([]);
+  });
+
+  it("refuses a body that is not an object", async () => {
+    for (const body of [null, "string", 42, ["array"]]) {
+      expect((await postSignInCode(h.ports, h.auth, body)).kind).toBe("invalid");
+    }
+  });
+
+  it("refuses to switch region on an existing account", async () => {
+    await enrolFully(h);
+    const result = await postSession(h.ports, h.auth, {
+      region: "china",
+      email: EMAIL,
+      code: CODE,
+    });
+
+    // Silently keeping the old region would leave a token minted for a host it
+    // will never be presented to.
+    expect(result.kind).toBe("invalid");
+    expect(h.completed.length).toBe(1);
+  });
+});
+
+describe("the printer picker", () => {
+  it("refuses a printer the account does not have", async () => {
+    await postSession(h.ports, h.auth, { region: "global", email: EMAIL, code: CODE });
+    const result = await postPrinters(h.ports, h.auth, { deviceIds: ["not-a-real-device"] });
+
+    expect(result.kind).toBe("invalid");
+  });
+
+  it("checks the choice against Bambu rather than against the request", async () => {
+    await postSession(h.ports, h.auth, { region: "global", email: EMAIL, code: CODE });
+    h.listFails();
+
+    // With no trustworthy list of what exists, the only honest answer is that we
+    // could not check — never to accept the browser's word for it.
+    expect((await postPrinters(h.ports, h.auth, { deviceIds: ["anything"] })).kind).toBe("upstream");
+  });
+
+  it("caps the selection at what the display can carry", async () => {
+    const many: DiscoveredPrinter[] = Array.from({ length: 6 }, (_unused, index) => ({
+      deviceId: `${"0".repeat(8)}${index}`,
+      name: `Printer ${index}`,
+      online: true,
+      model: null,
+    }));
+    const wide = await harness();
+    wide.printers.length = 0;
+    wide.printers.push(...many);
+
+    await postSession(wide.ports, wide.auth, { region: "global", email: EMAIL, code: CODE });
+    const issued = await postPrinters(wide.ports, wide.auth, {
+      deviceIds: many.map((printer) => printer.deviceId),
+    });
+    if (issued.kind !== "key-issued") throw new Error("no key issued");
+
+    const poll = await wide.store.pollByScreenKey(await screenKeyFingerprint(issued.screenKey));
+    expect(poll?.account.deviceIds.length).toBe(3);
+    // The user's order is kept, because the first printer leads the display.
+    expect(poll?.account.deviceIds).toEqual(many.slice(0, 3).map((printer) => printer.deviceId));
+  });
+
+  it("refuses an empty selection rather than storing one", async () => {
+    await enrolFully(h);
+    const result = await postPrinters(h.ports, h.auth, { deviceIds: [] });
+
+    expect(result.kind).toBe("invalid");
+  });
+
+  it("needs an account before it will take a selection", async () => {
+    const result = await postPrinters(h.ports, h.auth, {
+      deviceIds: [h.printers[0]?.deviceId],
+    });
+
+    expect(result.kind).toBe("no-account");
+  });
+});
+
+describe("rotation and deletion", () => {
+  it("retires the old key when a new one is issued", async () => {
+    const first = await enrolFully(h);
+    const rotated = await postKeyRotation(h.ports, h.auth);
+    if (rotated.kind !== "key-issued") throw new Error("rotation issued no key");
+
+    expect(rotated.screenKey).not.toBe(first.screenKey);
+    await expect(
+      h.store.pollByScreenKey(await screenKeyFingerprint(first.screenKey)),
+    ).resolves.toBeNull();
+    await expect(
+      h.store.pollByScreenKey(await screenKeyFingerprint(rotated.screenKey)),
+    ).resolves.not.toBeNull();
+  });
+
+  it("keeps the chosen printers through a rotation", async () => {
+    const { account } = await enrolFully(h);
+    const rotated = await postKeyRotation(h.ports, h.auth);
+    if (rotated.kind !== "key-issued") throw new Error("rotation issued no key");
+
+    const poll = await h.store.pollByScreenKey(await screenKeyFingerprint(rotated.screenKey));
+    expect(poll?.account.deviceIds).toEqual(account.deviceIds);
+  });
+
+  it("deletes the account, its screen, and its key", async () => {
+    const { screenKey, account } = await enrolFully(h);
+    await h.store.writeScreen(account.id, { body: "{}", renderedAt: NOW });
+
+    expect(await deleteAccount(h.ports, h.auth)).toEqual({ kind: "done" });
+
+    expect(await h.store.accountById(account.id)).toBeNull();
+    expect(await h.store.readScreen(account.id)).toBeNull();
+    expect(await h.store.pollByScreenKey(await screenKeyFingerprint(screenKey))).toBeNull();
+  });
+
+  it("lets the same person enrol again after deleting", async () => {
+    await enrolFully(h);
+    await deleteAccount(h.ports, h.auth);
+
+    // The owner tag is unique, so a tombstone would make this impossible and the
+    // person would be locked out of their own product.
+    const again = await enrolFully(h);
+    expect(again.account.deviceIds.length).toBe(1);
+  });
+
+  it("reports the account's state to its settings page", async () => {
+    const { account } = await enrolFully(h);
+    await h.store.markReauthRequired(account.id);
+
+    expect(await getAccount(h.ports, h.auth)).toEqual({
+      kind: "account",
+      deviceIds: account.deviceIds,
+      reauthRequired: true,
+    });
+  });
+});
+
+describe("throttling", () => {
+  // Without this, an account here is a way to make Bambu email an address
+  // repeatedly. Identity bounds who can do it; the limiter bounds how often.
+  it("throttles one identity's sign-in attempts", async () => {
+    let calls = 0;
+    const limiter: RateLimiter = {
+      async limit() {
+        calls += 1;
+        return { success: calls <= 2 };
+      },
+    };
+    const throttled = await harness({ limiter });
+
+    expect((await postSignInCode(throttled.ports, throttled.auth, { region: "global", email: EMAIL })).kind).toBe("done");
+    expect((await postSignInCode(throttled.ports, throttled.auth, { region: "global", email: EMAIL })).kind).toBe("done");
+    const third = await postSignInCode(throttled.ports, throttled.auth, {
+      region: "global",
+      email: EMAIL,
+    });
+
+    expect(third.kind).toBe("throttled");
+    // Refused before Bambu, so the limiter bounds the outbound email and not
+    // merely our own status code.
+    expect(throttled.sent.length).toBe(2);
+  });
+
+  it("keys the limit to the identity, not the request", async () => {
+    const keys: string[] = [];
+    const limiter: RateLimiter = {
+      async limit({ key }) {
+        keys.push(key);
+        return { success: true };
+      },
+    };
+    const counted = await harness({ limiter });
+    await postSignInCode(counted.ports, counted.auth, { region: "global", email: EMAIL });
+    await postSignInCode(counted.ports, counted.otherAuth, { region: "global", email: EMAIL });
+
+    // Two identities, two counters; and the key is the owner tag, so it is
+    // neither the subject nor anything a request supplied.
+    expect(new Set(keys).size).toBe(2);
+    expect(keys.some((key) => key.includes("subject-"))).toBe(false);
+    for (const key of keys) expect(key).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  // The opposite of the screen endpoint's choice, deliberately. There a limiter
+  // fault costs only our own database work, so failing closed would be an
+  // outage. Here the limiter is the only bound on how often we can make Bambu
+  // email an address, so a fault must stop us rather than free us. New enrolment
+  // pauses; every configured display keeps working on a different route.
+  it("refuses a sign-in when the limiter cannot answer", async () => {
+    const broken: RateLimiter = { limit: () => Promise.reject(new Error("down")) };
+    const degraded = await harness({ limiter: broken });
+
+    const result = await postSignInCode(degraded.ports, degraded.auth, {
+      region: "global",
+      email: EMAIL,
+    });
+
+    expect(result.kind).toBe("throttled");
+    // Refused before Bambu, which is the point.
+    expect(degraded.sent).toEqual([]);
+  });
+
+  // Not a mail path, so a smaller exposure than the sign-in routes, but still an
+  // authenticated path to repeated Bambu calls. `store.ts` says plainly that a
+  // loop against the cloud is what earns an account a ban.
+  it("meters the printer route, which also reaches Bambu", async () => {
+    let calls = 0;
+    const limiter: RateLimiter = {
+      async limit() {
+        calls += 1;
+        return { success: calls <= 2 };
+      },
+    };
+    const metered = await harness({ limiter });
+    let listings = 0;
+    const counting: EnrolPorts = {
+      ...metered.ports,
+      async printersFor(account) {
+        listings += 1;
+        return await metered.ports.printersFor(account);
+      },
+    };
+
+    // Two of the budget go to the sign-in pair, so the picker is already over.
+    await postSignInCode(counting, metered.auth, { region: "global", email: EMAIL });
+    await postSession(counting, metered.auth, { region: "global", email: EMAIL, code: CODE });
+    const refused = await postPrinters(counting, metered.auth, {
+      deviceIds: [metered.printers[0]?.deviceId],
+    });
+
+    expect(refused.kind).toBe("throttled");
+    // Refused before the cloud call, not after it.
+    expect(listings).toBe(0);
+  });
+
+  it("does not spend budget on a malformed selection", async () => {
+    const keys: string[] = [];
+    const limiter: RateLimiter = {
+      async limit({ key }) {
+        keys.push(key);
+        return { success: true };
+      },
+    };
+    const counted = await harness({ limiter });
+    await postSession(counted.ports, counted.auth, { region: "global", email: EMAIL, code: CODE });
+    const before = keys.length;
+
+    expect((await postPrinters(counted.ports, counted.auth, { deviceIds: [] })).kind).toBe("invalid");
+
+    // Cheap validation first: a bad request should not cost a legitimate one.
+    expect(keys.length).toBe(before);
+  });
+});

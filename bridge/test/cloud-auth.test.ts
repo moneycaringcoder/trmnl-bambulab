@@ -3,6 +3,7 @@ import {
   LOGIN_PATH,
   SEND_EMAIL_CODE_PATH,
   advance,
+  beginCodeLogin,
   beginPasswordLogin,
   type AuthPhase,
   type AuthTransition,
@@ -37,6 +38,50 @@ describe("beginPasswordLogin", () => {
     });
     expect(JSON.stringify(transition.phase)).not.toContain(PASSWORD);
     expect(transition.prompt).toBeNull();
+  });
+});
+
+describe("beginCodeLogin", () => {
+  it("asks Bambu to email a code without ever taking a password", () => {
+    const transition = beginCodeLogin(ACCOUNT);
+
+    expect(transition.phase).toEqual({ kind: "await-email-code", account: ACCOUNT });
+    expect(transition.request).toEqual({
+      path: SEND_EMAIL_CODE_PATH,
+      body: { email: ACCOUNT, type: "codeLogin" },
+    });
+    // The hosted tier uses this path precisely so a Bambu password never
+    // transits our server. A password-shaped key appearing in the body would
+    // defeat the reason the entry point exists.
+    expect(Object.keys(transition.request?.body ?? {})).toEqual(["email", "type"]);
+    expect(transition.prompt?.field).toBe("email-code");
+  });
+
+  it("joins the same code branch a password login falls into", () => {
+    const viaCode = beginCodeLogin(ACCOUNT);
+    const viaPassword = advance(beginPasswordLogin(ACCOUNT, PASSWORD).phase, {
+      kind: "login-result",
+      response: { loginType: "verifyCode" },
+    });
+
+    // One branch to maintain, and one to have got right, rather than two.
+    expect(viaCode.phase).toEqual(viaPassword.phase);
+    expect(viaCode.request).toEqual(viaPassword.request);
+  });
+
+  it("reaches a token from the code alone", () => {
+    const start = beginCodeLogin(ACCOUNT);
+    const submitted = advance(start.phase, { kind: "email-code", code: "123456" });
+    const done = advance(submitted.phase, {
+      kind: "login-result",
+      response: { accessToken: TOKEN },
+    });
+
+    expect(submitted.request).toEqual({
+      path: LOGIN_PATH,
+      body: { account: ACCOUNT, code: "123456" },
+    });
+    expect(done.phase).toEqual({ kind: "authenticated", accessToken: TOKEN });
   });
 });
 

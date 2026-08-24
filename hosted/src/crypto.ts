@@ -43,6 +43,15 @@ export interface KeyEntry {
   /** Short, stable, and meaningless on its own, for example `k1`. */
   id: string;
   key: CryptoKey;
+  /**
+   * A separate HMAC key derived from the same secret, for owner tags.
+   *
+   * Derived rather than reused. Using one key for both encryption and a MAC is
+   * the kind of shortcut that has broken real protocols: the two algorithms make
+   * different assumptions about what an attacker may observe, and HKDF with a
+   * distinct label costs nothing and keeps them independent.
+   */
+  tagKey: CryptoKey;
 }
 
 export interface Keyring {
@@ -50,6 +59,15 @@ export interface Keyring {
   current: KeyEntry;
   /** Every key that may still appear in stored data, including the current one. */
   byId: Record<string, CryptoKey>;
+  /**
+   * Every tag key, in the order they should be tried.
+   *
+   * A tag is a lookup value, so it cannot be recomputed after a key rotation
+   * without the original input, which we deliberately do not keep. Rotation is
+   * therefore handled by computing the candidate tags under every configured
+   * key and matching any of them, rather than by storing a key id per row.
+   */
+  tagKeys: CryptoKey[];
 }
 
 export class CryptoError extends Error {
@@ -72,6 +90,7 @@ export async function importKeyring(
   currentId: string,
 ): Promise<Keyring> {
   const byId: Record<string, CryptoKey> = {};
+  const tagKeyById: Record<string, CryptoKey> = {};
 
   for (const [id, encoded] of Object.entries(secrets)) {
     const raw = decodeBase64(encoded);
@@ -82,13 +101,87 @@ export async function importKeyring(
       "encrypt",
       "decrypt",
     ]);
+    tagKeyById[id] = await deriveTagKey(raw);
   }
 
   const current = byId[currentId];
-  if (current === undefined) {
+  const currentTagKey = tagKeyById[currentId];
+  if (current === undefined || currentTagKey === undefined) {
     throw new CryptoError(`the current key id "${currentId}" is not among the configured keys`);
   }
-  return { current: { id: currentId, key: current }, byId };
+  // Current key first, because it is the one that will match for every account
+  // enrolled since the last rotation, which is almost all of them.
+  const tagKeys = [currentTagKey, ...Object.entries(tagKeyById)
+    .filter(([id]) => id !== currentId)
+    .map(([, key]) => key)];
+
+  return { current: { id: currentId, key: current, tagKey: currentTagKey }, byId, tagKeys };
+}
+
+/**
+ * Derives the owner-tag key from an encryption secret, by HKDF with a label.
+ *
+ * The label is what keeps the two uses of one secret independent. It is a
+ * constant and must never change: it is baked into every stored tag, so editing
+ * it would silently orphan every account.
+ */
+async function deriveTagKey(raw: Uint8Array<ArrayBuffer>): Promise<CryptoKey> {
+  const base = await crypto.subtle.importKey("raw", raw, "HKDF", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      // No salt: the input is already a uniformly random 256-bit key, which is
+      // the case RFC 5869 says a salt is optional for.
+      salt: new Uint8Array(0),
+      info: new TextEncoder().encode("trmnl-bambulab/owner-tag/v1"),
+    },
+    base,
+    KEY_BITS,
+  );
+  return await crypto.subtle.importKey(
+    "raw",
+    bits,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+}
+
+/**
+ * The stored form of an identity-provider subject.
+ *
+ * Keyed rather than plainly hashed, because the provider does not document the
+ * entropy of the value it puts in `sub`. If that value were ever low-entropy or
+ * guessable — an email, a sequence number — a bare SHA-256 of it would be
+ * reversible by dictionary attack, and a database leak would then tell an
+ * attacker exactly which people hold accounts here. An HMAC under a key that
+ * lives in Worker secrets rather than in the database removes that.
+ *
+ * It is deterministic, which is what makes it usable as a lookup, and that is
+ * the accepted trade: two identical subjects produce the same tag, so the
+ * database can still tell that two rows belong to one person. Nothing else can.
+ */
+export async function ownerTag(tagKey: CryptoKey, subject: string): Promise<string> {
+  const mac = await crypto.subtle.sign("HMAC", tagKey, new TextEncoder().encode(subject.trim()));
+  return hex(new Uint8Array(mac));
+}
+
+/**
+ * Every tag a subject could be stored under, newest key first.
+ *
+ * A lookup matches any of these, which is how an account enrolled before a key
+ * rotation is still found afterwards.
+ */
+export async function ownerTagCandidates(
+  keyring: Keyring,
+  subject: string,
+): Promise<string[]> {
+  return await Promise.all(keyring.tagKeys.map((key) => ownerTag(key, subject)));
+}
+
+function hex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /** What gets stored. Every field is safe to write to a database column. */

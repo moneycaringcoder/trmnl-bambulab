@@ -109,12 +109,22 @@ an account. What is left, in order:
    per-request log. Verified against a real throwaway Postgres: the migration
    applies, the delete cascade works, and a sealed token still opens after a
    database round trip.
-2. **Sign-in and printer picker.** The web flow: authenticate, run the Bambu
-   login the CLI already implements, list printers, choose, issue a key.
-3. **Identity.** A hosted provider with social and passwordless email, per D12.
-   Provisioning it in the owner's Neon project is theirs to do.
-4. **Revoke and delete, in the interface.** `deleteAccount` exists and cascades;
-   nothing calls it from outside.
+2. ~~**Sign-in and printer picker.**~~ **API done; no web page yet.** Six routes
+   behind a verified session: ask Bambu to email a code, exchange the code for a
+   token, list and choose printers, rotate the key, read the account, delete it.
+   The Bambu sign-in is passwordless, so a Bambu password never reaches this
+   service (D14). Nothing is kept between the two login steps (D15). What is
+   missing is the HTML: a person cannot use this from a browser until there is a
+   page, only from a client that can present a token.
+3. ~~**Identity.**~~ **Code done; the provider is not provisioned.** Sessions are
+   verified locally against the provider's published key set, with the algorithm
+   pinned and only the subject kept (D17). The subject is stored as a keyed tag,
+   never raw (D16). Provisioning Neon Auth in the owner's project is theirs to
+   do, and until `NEON_AUTH_BASE_URL` is set the whole surface answers 404.
+4. ~~**Revoke and delete, in the interface.**~~ **Done.** `DELETE /v1/account`
+   and `POST /v1/enrol/key`, both behind a session. Proven against a real
+   Postgres: the row and its screen go, the retired key stops resolving, another
+   identity cannot touch either, and the same person can enrol again.
 5. ~~**Rate limits and abuse controls.**~~ **Done.** Two Cloudflare rate-limit
    bindings. The address ceiling sits before the account lookup, so it bounds
    database work rather than relabelling a query already paid for; an
@@ -122,12 +132,16 @@ an account. What is left, in order:
    The account ceiling is keyed by key fingerprint. Proven against a real
    runtime in two runs: with a working database 400 guesses from one address
    all answered 404, and with the database pointed at nothing 300 of 400
-   reached Postgres while 100 were refused before it. Sign-up throttling
-   waits on sign-up existing.
-6. **Publish the recipe.** One click to install, one field to paste a key into.
+   reached Postgres while 100 were refused before it. Sign-up throttling now
+   exists as well: `ENROL_LIMITER`, ten attempts a minute per identity,
+   consulted before the route can make Bambu send an email.
+6. ~~**Publish the recipe.**~~ **Declared, not published.** `plugin/src/settings.yml`
+   carries the polling strategy, the header interpolation and the one password
+   field. Publishing an Unlisted Recipe is an action in TRMNL's interface, so
+   it is the owner's to take.
 
-Step 2 is the bulk of what remains. Steps 3, 4 and 6 are gates rather than
-features, and step 3 is the one only the owner can start.
+What remains is a browser page for step 2, and the two things only the owner can
+do: provision Neon Auth, and publish the recipe. Nothing else is blocking.
 
 ## Known unknowns
 

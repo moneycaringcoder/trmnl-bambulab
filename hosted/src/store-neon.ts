@@ -17,7 +17,7 @@
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 
 import type { SealedToken } from "./crypto.ts";
-import type { Account, Screen, Store } from "./store.ts";
+import type { Account, PollResult, Screen, Store } from "./store.ts";
 
 interface RowDrift {
   ok: false;
@@ -57,6 +57,10 @@ function parseAccount(value: unknown): ParseResult<Account> {
   const id = value.id;
   if (typeof id !== "string" || id.length === 0) {
     return drift("id", "a non-empty string");
+  }
+  const ownerTag = value.owner_tag;
+  if (typeof ownerTag !== "string" || ownerTag.length === 0) {
+    return drift("owner_tag", "a non-empty string");
   }
   const region = value.region;
   if (region !== "global" && region !== "china") {
@@ -102,6 +106,7 @@ function parseAccount(value: unknown): ParseResult<Account> {
     ok: true,
     value: {
       id,
+      ownerTag,
       region,
       token: { keyId, nonce, ciphertext },
       screenKeyFingerprint,
@@ -168,6 +173,7 @@ export class NeonStore implements Store {
         WHERE account.id = due.id
         RETURNING
           account.id,
+          account.owner_tag,
           account.region,
           account.token_key_id,
           account.token_nonce,
@@ -182,6 +188,7 @@ export class NeonStore implements Store {
       )
       SELECT
         id,
+        owner_tag,
         region,
         token_key_id,
         token_nonce,
@@ -211,6 +218,7 @@ export class NeonStore implements Store {
     const result: unknown = await this.sql`
       SELECT
         id,
+        owner_tag,
         region,
         token_key_id,
         token_nonce,
@@ -229,14 +237,11 @@ export class NeonStore implements Store {
     return parsed.ok ? parsed.value : null;
   }
 
-  async accountByScreenKey(fingerprint: string): Promise<Account | null> {
-    // This is the refresh hot path: one equality query against the UNIQUE
-    // constraint's index and no dependent read. Deliberately do not filter on
-    // reauth_required. A refused token should leave its last rendered screen
-    // readable; a stale display that says it is stale is better than a blank one.
+  async accountByOwner(candidateTags: readonly string[]): Promise<Account | null> {
     const result: unknown = await this.sql`
       SELECT
         id,
+        owner_tag,
         region,
         token_key_id,
         token_nonce,
@@ -247,12 +252,51 @@ export class NeonStore implements Store {
         export_job_name,
         reauth_required
       FROM accounts
-      WHERE screen_key_fingerprint = ${fingerprint}
+      WHERE owner_tag = ANY(${[...candidateTags]})
+      LIMIT 1
     `;
     const row = rowsFrom(result)[0];
     if (row === undefined) return null;
     const parsed = parseAccount(row);
     return parsed.ok ? parsed.value : null;
+  }
+
+  async pollByScreenKey(fingerprint: string): Promise<PollResult | null> {
+    // This is the refresh hot path: one equality query against the UNIQUE
+    // constraint's index and no dependent read. Deliberately do not filter on
+    // reauth_required. A refused token should leave its last rendered screen
+    // readable; a stale display that says it is stale is better than a blank one.
+    const result: unknown = await this.sql`
+      SELECT
+        accounts.id,
+        accounts.owner_tag,
+        accounts.region,
+        accounts.token_key_id,
+        accounts.token_nonce,
+        accounts.token_ciphertext,
+        accounts.screen_key_fingerprint,
+        accounts.device_ids,
+        accounts.max_payload_bytes,
+        accounts.export_job_name,
+        accounts.reauth_required,
+        screens.body,
+        screens.rendered_at::double precision AS rendered_at
+      FROM accounts
+      LEFT JOIN screens ON screens.account_id = accounts.id
+      WHERE accounts.screen_key_fingerprint = ${fingerprint}
+    `;
+    const row = rowsFrom(result)[0];
+    if (row === undefined) return null;
+
+    const account = parseAccount(row);
+    if (!account.ok) return null;
+    if (isDatabaseRow(row) && row.body === null) {
+      return { account: account.value, screen: null };
+    }
+
+    const screen = parseScreen(row);
+    if (!screen.ok) throw new Error(screen.reason);
+    return { account: account.value, screen: screen.value };
   }
 
   async createAccount(account: Omit<Account, "reauthRequired">): Promise<Account> {
@@ -262,6 +306,7 @@ export class NeonStore implements Store {
     await this.sql`
       INSERT INTO accounts (
         id,
+        owner_tag,
         region,
         token_key_id,
         token_nonce,
@@ -273,6 +318,7 @@ export class NeonStore implements Store {
         reauth_required
       ) VALUES (
         ${account.id},
+        ${account.ownerTag},
         ${account.region},
         ${account.token.keyId},
         ${account.token.nonce},
@@ -286,6 +332,7 @@ export class NeonStore implements Store {
     `;
     return {
       id: account.id,
+      ownerTag: account.ownerTag,
       region: account.region,
       token: {
         keyId: account.token.keyId,
@@ -308,6 +355,14 @@ export class NeonStore implements Store {
         token_nonce = ${token.nonce},
         token_ciphertext = ${token.ciphertext},
         reauth_required = false
+      WHERE id = ${accountId}
+    `;
+  }
+
+  async replacePrinters(accountId: string, deviceIds: readonly string[]): Promise<void> {
+    await this.sql`
+      UPDATE accounts
+      SET device_ids = ${[...deviceIds]}
       WHERE id = ${accountId}
     `;
   }

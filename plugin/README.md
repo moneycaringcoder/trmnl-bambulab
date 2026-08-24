@@ -1,7 +1,18 @@
 # The TRMNL plugin
 
-A TRMNL Private Plugin using the Webhook strategy. The bridge POSTs a small
-JSON snapshot to the plugin's webhook URL; these Liquid templates render it.
+These templates support the self-hosted Webhook tier and the hosted Polling
+tier.
+
+## Self-hosted install
+
+Create a TRMNL Private Plugin with the **Webhook** strategy. Copy its webhook URL
+and paste it into `bridge/.env`, then run the bridge.
+
+## Hosted install
+
+Install the Recipe and paste one value into its form: the screen key. This path
+is **not installable yet** because hosted enrolment has not been deployed, so
+nobody can obtain a screen key today.
 
 ## What the payload looks like
 

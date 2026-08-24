@@ -1,17 +1,35 @@
 /**
  * Cloudflare entrypoint for the hosted tier.
  *
- * Two surfaces. The scheduled handler renders each due account's screen and
- * stores it. The fetch handler serves a stored screen to TRMNL, and answers
- * `/healthz`, and refuses everything else.
+ * Three surfaces. The scheduled handler renders each due account's screen and
+ * stores it. `GET /v1/screen` serves a stored screen to TRMNL. The enrolment
+ * routes under `/v1/enrol/` and `/v1/account` let a signed-in person set the
+ * thing up, change it, and delete it.
  *
- * Neither surface can reach a printer, and the fetch handler writes nothing:
- * every route here is a read. There is still no sign-in or printer-picker
- * route, and this handler must not grow an unauthenticated one that touches an
- * account.
+ * No surface here can reach a printer, and none writes to one. The screen route
+ * is a pure read. The enrolment routes do write, and every one of them resolves
+ * a verified session before it touches an account: this handler must never grow
+ * an unauthenticated route that does.
+ *
+ * Only the scheduled handler logs. Both HTTP surfaces are deliberately silent,
+ * for different reasons — the screen route because an anonymous caller would
+ * otherwise control our log volume, and the enrolment routes because that is
+ * where an email address enters the system.
  */
 
-import { importKeyring } from "./crypto.ts";
+import { importKeyring, openToken } from "./crypto.ts";
+import { completeSignIn, discoverPrinters, requestSignInCode } from "./enrol.ts";
+import {
+  deleteAccount,
+  getAccount,
+  postKeyRotation,
+  postPrinters,
+  postSession,
+  postSignInCode,
+  type EnrolPorts,
+  type RouteResult,
+} from "./routes.ts";
+import { SessionVerifier } from "./session.ts";
 import {
   networkDependencies,
   runDueAccounts,
@@ -48,20 +66,48 @@ export function cycleLogDetail(summary: AccountCycleSummary): LogDetail {
   };
 }
 
+/**
+ * Collects the key secrets Wrangler injects, in one place.
+ *
+ * Both surfaces need this now, and duplicating the prefix logic is how one of
+ * them ends up quietly reading a different key set from the other.
+ */
+async function keyringFrom(env: Env) {
+  const keySecrets: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (
+      name.startsWith("TOKEN_KEY_") &&
+      name !== "TOKEN_KEY_CURRENT_ID" &&
+      typeof value === "string"
+    ) {
+      keySecrets[name.slice("TOKEN_KEY_".length).toLowerCase()] = value;
+    }
+  }
+  return await importKeyring(keySecrets, env.TOKEN_KEY_CURRENT_ID);
+}
+
+/**
+ * One verifier per isolate, so the key cache survives between requests.
+ *
+ * Built lazily because the configuration lives in `env`, which is not available
+ * at module scope, and rebuilt if that configuration ever changes so a deploy
+ * that provisions identity does not need an isolate to recycle first.
+ */
+let verifier: SessionVerifier | null = null;
+let verifierBaseUrl: string | undefined;
+
+function verifierFor(env: Env): SessionVerifier {
+  if (verifier === null || verifierBaseUrl !== env.NEON_AUTH_BASE_URL) {
+    verifierBaseUrl = env.NEON_AUTH_BASE_URL;
+    verifier = new SessionVerifier({ baseUrl: env.NEON_AUTH_BASE_URL });
+  }
+  return verifier;
+}
+
 export default {
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
     try {
-      const keySecrets: Record<string, string> = {};
-      for (const [name, value] of Object.entries(env)) {
-        if (
-          name.startsWith("TOKEN_KEY_") &&
-          name !== "TOKEN_KEY_CURRENT_ID" &&
-          typeof value === "string"
-        ) {
-          keySecrets[name.slice("TOKEN_KEY_".length).toLowerCase()] = value;
-        }
-      }
-      const keyring = await importKeyring(keySecrets, env.TOKEN_KEY_CURRENT_ID);
+      const keyring = await keyringFrom(env);
       const summaries = await runDueAccounts(
         {
           store: new NeonStore(env.DATABASE_URL),
@@ -103,8 +149,10 @@ export default {
       return await screenResponse(request, env);
     }
 
-    // There is still no sign-in or printer-picker route. This handler must not
-    // grow an unauthenticated one that touches an account.
+    if (url.pathname.startsWith("/v1/enrol/") || url.pathname === "/v1/account") {
+      return await enrolResponse(request, env, url);
+    }
+
     return notFound();
   },
 } satisfies ExportedHandler<Env>;
@@ -208,5 +256,151 @@ function notFound(): Response {
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-store",
     },
+  });
+}
+
+/**
+ * The authenticated surface, behind a verified session on every route.
+ *
+ * Unlike the screen endpoint, these routes are allowed to say what went wrong:
+ * their caller is a signed-in person looking at a form, and a form that refuses
+ * without saying why is unusable. What they never say is anything Bambu told us
+ * about whether an address exists, and they never carry a cloud token.
+ *
+ * Nothing is logged here either, and that matters more on this surface than on
+ * the last one: this is where an email address first enters the system, so a
+ * single well-meaning log line would breach `AGENTS.md`.
+ */
+async function enrolResponse(request: Request, env: Env, url: URL): Promise<Response> {
+  const verifier = verifierFor(env);
+  // Identity unprovisioned means this whole surface does not exist, rather than
+  // existing and trusting the caller. A deployment without an identity provider
+  // must expose nothing, not everything.
+  if (!verifier.configured) return notFound();
+
+  const store = new NeonStore(env.DATABASE_URL);
+  let keyring;
+  try {
+    keyring = await keyringFrom(env);
+  } catch {
+    return serviceUnavailable();
+  }
+
+  const ports: EnrolPorts = {
+    store,
+    keyring,
+    verifier,
+    limiter: env.ENROL_LIMITER,
+    requestSignInCode,
+    completeSignIn,
+    async printersFor(account) {
+      // The token is opened for exactly this call and never held.
+      return await discoverPrinters(account.region, await openToken(keyring, account.id, account.token));
+    },
+    now: Date.now(),
+  };
+
+  const authorization = request.headers.get("Authorization");
+  let body: unknown = null;
+  if (request.method === "POST") {
+    const raw = await request.text().catch(() => "");
+    // A bodyless POST is legitimate: rotating a key takes no arguments, and
+    // demanding `{}` for it would be a rule that exists only to be tripped over.
+    if (raw.trim() !== "") {
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        // A malformed body is a client mistake, and saying so beats a 500.
+        return routeResponse({ kind: "invalid", guidance: "Send a JSON body." });
+      }
+    }
+  }
+
+  const route = `${request.method} ${url.pathname}`;
+  try {
+    switch (route) {
+      case "POST /v1/enrol/code":
+        return routeResponse(await postSignInCode(ports, authorization, body));
+      case "POST /v1/enrol/session":
+        return routeResponse(await postSession(ports, authorization, body));
+      case "POST /v1/enrol/printers":
+        return routeResponse(await postPrinters(ports, authorization, body));
+      case "POST /v1/enrol/key":
+        return routeResponse(await postKeyRotation(ports, authorization));
+      case "GET /v1/account":
+        return routeResponse(await getAccount(ports, authorization));
+      case "DELETE /v1/account":
+        return routeResponse(await deleteAccount(ports, authorization));
+      default:
+        return notFound();
+    }
+  } catch {
+    // A database or crypto failure. Its text can name a host or carry key
+    // material, so it is neither logged nor returned.
+    return serviceUnavailable();
+  }
+}
+
+/**
+ * The HTTP form of a route decision, in one place so no route invents its own.
+ *
+ * `unauthenticated` is a 401 rather than the screen endpoint's 404. The
+ * reasoning differs because the threat differs: there, an honest status would
+ * have told a key-guesser whether a key existed, whereas here the caller is a
+ * person with a browser who needs to be told to sign in again.
+ */
+function routeResponse(result: RouteResult): Response {
+  switch (result.kind) {
+    case "done":
+      return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+    case "printers":
+      return json({ printers: result.printers }, 200);
+    case "key-issued":
+      // The one response in this Worker that carries a screen key. It is shown
+      // once and never stored, so a caller that loses it must rotate.
+      return json({ screen_key: result.screenKey }, 200);
+    case "account":
+      return json({ device_ids: result.deviceIds, reauth_required: result.reauthRequired }, 200);
+    case "unauthenticated":
+      return json({ error: "Sign in again." }, 401);
+    case "no-account":
+      return json({ error: "There is no printer set up for this account yet." }, 404);
+    case "throttled":
+      return new Response(JSON.stringify({ error: "Too many attempts. Wait a minute." }), {
+        status: 429,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+          "Retry-After": "60",
+        },
+      });
+    case "invalid":
+      return json({ error: result.guidance }, 400);
+    case "upstream":
+      // A refused code is the caller's mistake and a 400 says so; only a genuine
+      // Bambu failure is a 502. Reporting both as 502 told someone who mistyped
+      // a code that the service was down, which is advice to wait when the right
+      // advice is to look at their inbox again.
+      return json(
+        { error: result.failure.guidance },
+        result.failure.kind === "cloud-unavailable" ? 502 : 400,
+      );
+  }
+}
+
+function json(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+function serviceUnavailable(): Response {
+  return new Response("Service Unavailable", {
+    status: 503,
+    headers: { "Cache-Control": "no-store" },
   });
 }

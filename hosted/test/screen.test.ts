@@ -3,7 +3,7 @@ import { newAccountId, newScreenKey, screenKeyFingerprint, sealToken } from "../
 import { FRESH_FOR_MS, serveScreen, type RateLimiter } from "../src/screen.ts";
 import { MemoryStore } from "../src/store-memory.ts";
 import type { Account, Store } from "../src/store.ts";
-import { keyringForTest, TOKEN } from "./helpers.ts";
+import { keyringForTest, ownerTagForTest, TOKEN } from "./helpers.ts";
 import { unknownPrinterState } from "../../bridge/src/coordinator/merge.ts";
 import { buildWebhookPayload } from "../../bridge/src/push/payload.ts";
 import { DEVICE_ID } from "../../bridge/test/synthetic-values.ts";
@@ -37,6 +37,7 @@ async function enrol(
 
   const account = await store.createAccount({
     id,
+    ownerTag: ownerTagForTest(),
     region: "global",
     token: await sealToken(keyring, id, TOKEN),
     screenKeyFingerprint: await screenKeyFingerprint(key),
@@ -344,7 +345,7 @@ describe("rate limiting", () => {
     let lookups = 0;
     const counting = new Proxy({} as Store, {
       get: (_target, name) => {
-        if (name === "accountByScreenKey") {
+        if (name === "pollByScreenKey") {
           return () => {
             lookups += 1;
             return Promise.resolve(null);

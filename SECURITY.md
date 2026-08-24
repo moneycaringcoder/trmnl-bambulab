@@ -54,6 +54,70 @@ jobs run. Job names are worse: they frequently contain a private or
 pre-release model name. That is why the bridge exports a job name only when
 `TRMNL_EXPORT_JOB_NAME` is turned on, and why the default is off.
 
+### A leaked hosted screen key
+
+The screen key is a read capability and nothing more: it returns one account's
+rendered display payload. It cannot change a selection, cannot reach a printer,
+cannot read a Bambu token, and cannot be exchanged for anything else. A holder
+sees what that person's display shows.
+
+It is a bearer credential in an `Authorization` header rather than a URL, so it
+is not recorded by intermediary access logs, and the Worker's own per-request
+logging is off. Only a SHA-256 fingerprint is stored, so a database leak yields
+no working keys. The owner rotates it from the account page, and the previous
+key stops resolving immediately.
+
+### A compromised hosted session
+
+The hosted tier's enrolment surface trusts a short-lived Ed25519 token from the
+identity provider. A holder of a live token can, for that account only: change
+which printers are shown, rotate the screen key, and delete the account. They
+cannot read the Bambu token, and they cannot see the current screen key, because
+it is not stored.
+
+They can also cause Bambu to email a sign-in code to an address of their
+choosing. `ENROL_LIMITER` bounds that at ten a minute *per Cloudflare
+location*, which is the honest figure: Cloudflare documents its rate-limit
+binding as per-location, eventually consistent, and explicitly not an
+accounting system, so the global ceiling is a multiple of ten rather than ten.
+It is a cost and nuisance guard, not a quota. It fails *closed*, unlike the
+limiters on the screen endpoint: a limiter fault stops new enrolment rather
+than removing the only bound on sending mail to other people.
+
+The token is verified locally against the provider's published key set. The
+algorithm is pinned rather than read from the token, the issuer and audience are
+derived from one configured origin, and an absent expiry is refused rather than
+treated as eternal. Tokens live fifteen minutes, so the practical mitigation for
+a compromised session is the provider's own sign-out; there is no session state
+here to revoke, by design.
+
+### What the hosted database reveals if it leaks
+
+Assume the rows without the Worker's secrets. From `accounts`, an attacker gets:
+encrypted Bambu tokens they cannot open, screen-key fingerprints they cannot
+reverse, the printer serials each account chose, a region, and a keyed tag
+identifying each owner.
+
+From `screens` they get something more sensitive, and it is worth naming rather
+than leaving implied: that table holds the exact JSON last served to TRMNL, so it
+carries each printer's name, its state, progress, layer, time remaining and
+temperatures, and the job name for any account that opted into exporting one.
+That is precisely the presence data described under "What telemetry alone
+reveals" above — when someone is home, when the workshop is active, how long
+jobs run — for every account at once rather than one. A leak of this table is a
+privacy incident even though it contains no credential.
+
+The serials are the other real exposure, and they are stored because the cron
+needs them to poll. The owner tag is an HMAC under a key held in Worker secrets rather
+than a plain hash, specifically so that a leak of the database alone cannot be
+turned into a list of which people hold accounts here — the identity provider
+does not document the entropy of the subject it issues, and a bare digest of a
+guessable identifier is reversible by dictionary attack.
+
+No email address, no password, no verification code, and no plaintext token is
+stored anywhere. A password is never received in the first place: the hosted
+Bambu sign-in uses an emailed code.
+
 ## Project security rules
 
 These are commitments, and they are auditable in the tree.

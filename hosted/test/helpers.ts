@@ -16,6 +16,18 @@ import { generateKeyBase64, importKeyring, type Keyring } from "../src/crypto.ts
 export const TOKEN = ["synthetic", "cloud", "token", "value"].join("-");
 
 /**
+ * A fresh synthetic HMAC-SHA256-shaped owner tag.
+ *
+ * Runtime generation keeps credential-shaped material out of source and gives
+ * every synthetic account the same uniqueness production enforces.
+ */
+export function ownerTagForTest(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+/**
  * A keyring with one current key, generated fresh per call.
  *
  * Generated rather than fixed so that no test can accidentally depend on a

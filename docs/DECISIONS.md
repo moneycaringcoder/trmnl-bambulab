@@ -331,4 +331,142 @@ alternative is to answer `404` when the database fails, which would hide a real
 outage from whoever has to fix it. Honest failure signalling is worth more than
 closing a distinguisher that needs the key it would reveal.
 
-**Still missing:** sign-up throttling, which cannot exist until sign-up does.
+**Since superseded:** sign-up throttling now exists, because sign-up does. See
+D15 for `ENROL_LIMITER`.
+
+## D14. Hosted sign-in never sees a Bambu password
+
+**Chosen.** The hosted enrolment flow authenticates against Bambu with an
+emailed code and never asks for a password. Bambu's `sendemail/code` endpoint
+takes an address and a `codeLogin` type, and its login endpoint accepts that
+address plus the code, so the code is a complete credential rather than only a
+second factor.
+
+`AGENTS.md` says a password is used for one request and discarded. Not receiving
+one is strictly better than discarding one carefully: there is no window in which
+it exists in our process, nothing to get wrong in an error path, and nothing for
+a future logging change to leak. The self-hosted bridge keeps its password entry
+point, because it runs on the user's own machine and one request beats waiting
+for an email.
+
+**Unverified.** The owner's real sign-in reached the code endpoint only *after* a
+password attempt returned `verifyCode`. Whether Bambu will email a code with no
+prior password request is untested against a real account. If it refuses, the
+hosted flow needs the password after all — a product decision, not a bug.
+
+## D15. Login state lives in the browser, not on the server
+
+**Chosen.** The two-step sign-in keeps nothing between the steps. The only thing
+the second step needs from the first is the email address, which the browser
+already has, so there is no server-side login session.
+
+Nothing to expire, nothing to clean up, and no window where a half-finished
+login sits in our storage. A caller who fabricates the intermediate step gains
+nothing: they still need the code Bambu emailed to that address, and Bambu is
+the one that checks it.
+
+What this *does* create is an open relay risk: without a gate, anyone could make
+Bambu email anyone, repeatedly. Two things close it. Every enrolment route
+requires a verified identity, so there is no anonymous path to it at all; and
+`ENROL_LIMITER` bounds one identity to ten attempts a minute, keyed by their
+owner tag. That limiter is also the "sign-up throttling" gate that `AGENTS.md`
+asks for, which previously could not exist because sign-up did not.
+
+**It fails closed, unlike every other limiter here.** The screen endpoint's
+ceilings fail open because a fault there costs only our own database work, and
+failing closed would blank every display at once. This one is the sole bound on
+how often we can make Bambu email somebody, so a fault must stop us rather than
+free us. The blast radius is small and asymmetric: new enrolment pauses, while
+every configured display keeps working because it polls a different route. An
+audit pointed out that reasoning by analogy from the screen endpoint had produced
+the wrong answer here, and it was right.
+
+Two consequences worth stating. The binding is **required by the type**, not
+optional: it was optional so tests could omit it, which made the guarantee
+depend on configuration, and dropping the entry from `wrangler.jsonc` would have
+removed the bound silently — the same class of mistake as the fault the guarantee
+exists to prevent. And the printer picker is metered too, because it also calls
+Bambu; it cannot send mail, so it is a smaller exposure, but an unmetered
+authenticated path to repeated cloud calls is exactly the loop `store.ts` warns
+earns an account a ban.
+
+The ten-a-minute figure is per Cloudflare location, not global. Cloudflare
+documents the binding as per-location and eventually consistent, and explicitly
+not an accounting system, so this is a cost and nuisance guard rather than a
+quota.
+
+## D16. The identity subject is stored as a keyed tag, never raw
+
+**Chosen.** An account's owner is stored as `owner_tag`, an HMAC-SHA256 of the
+identity provider's `sub` under a key derived from the token-encryption secret
+by HKDF with a distinct label. The raw subject is never written down.
+
+**Why keyed rather than hashed.** Neon documents that `sub` is the
+`neon_auth.user.id` and shows UUID-shaped examples, but it does not document the
+generator, the length, or any entropy guarantee; upstream Better Auth's default
+is a 32-character alphanumeric id, which is evidence about self-hosted Better
+Auth and not a promise about Neon's managed configuration. If that value were
+ever low-entropy or guessable, a bare SHA-256 would be reversible by dictionary
+attack and a database leak would name everyone who holds an account here. An
+HMAC under a key that lives in Worker secrets rather than in the database removes
+that, and costs nothing.
+
+**Why HKDF rather than reusing the encryption key.** One key for both encryption
+and a MAC is the shortcut that has broken real protocols; the two algorithms
+assume different things about what an attacker may observe. A derivation with a
+distinct label keeps them independent for the price of one function call.
+
+**Rotation.** A tag is a lookup value, so it cannot be recomputed after a key
+rotation without the original subject, which is deliberately not kept. So
+`accountByOwner` takes every tag the subject could be stored under and matches
+any of them, rather than storing a key id per row. The label is a constant baked
+into every stored tag and must never change.
+
+`owner_tag` is `UNIQUE`: one signed-in person has one account. That is a product
+decision as much as a constraint — this plugin shows up to three printers on one
+screen, so a second account for the same person would be a second display.
+
+## D17. Sessions are verified locally against a published key set
+
+**Chosen.** A signed-in browser sends a short-lived Ed25519 token; the Worker
+verifies it against the provider's JWKS with no network call to the provider on
+the request path. `iss` and `aud` are both the origin of `NEON_AUTH_BASE_URL`, so
+they are derived from one setting rather than configured separately, and there is
+no way to deploy a verifier that accepts tokens from somewhere else. Neon
+documents no introspection endpoint, and reading the session row out of Postgres
+would put a query on every enrolment request.
+
+Four choices inside that, each with a cheap wrong version:
+
+- **The algorithm is pinned, never read from the token.** A verifier that picks
+  its algorithm from the token's own `alg` header lets the sender decide how they
+  will be checked. `none`, HMAC and RSA are refused before any key is touched.
+- **An unknown key id cannot be used to make us fetch.** Refetching on every
+  unknown `kid` is the documented way to pick up a rotation, and left there it is
+  also a way for anyone to command one outbound request per forged token. So a
+  miss refetches at most once every thirty seconds, which makes a rotation
+  invisible while bounding the abuse to two requests a minute. An audit measured
+  that bound rather than reading it and found it false: the floor exempted an
+  empty key cache, so a provider that never yielded a usable key gave every
+  forged token its own outbound fetch. The floor is now unconditional, and a
+  regression test presents twenty forged ids against a failing provider and
+  asserts one fetch. The five-minute
+  staleness TTL is a separate number: a key we already hold keeps working past
+  it, because treating it as an expiry would reject live sessions whenever the
+  provider was briefly unreachable.
+- **Only the subject survives.** The token also carries `email` and `name`.
+  `AGENTS.md` forbids logging an email, and the reliable way to honour that is
+  not to carry one: verification returns an opaque subject and discards every
+  other claim, so no later caller can leak what it never received.
+- **Unconfigured means the surface does not exist.** With no
+  `NEON_AUTH_BASE_URL`, every enrolment route answers 404 rather than falling
+  back to trusting its caller, so a half-provisioned deployment exposes nothing.
+
+**One bug worth recording, because only the real runtime found it.** The verifier
+stored the global `fetch` on a field and called it as `this.fetchImpl(...)`,
+which invokes it with the wrong receiver. Node tolerates that; the Workers
+runtime rejects it. The throw landed in the `catch` that exists to survive a
+provider outage, so the key set stayed silently empty and *every* session was
+refused as `unknown-key` — with a full unit suite passing. The fix is a wrapper
+rather than an assignment. The lesson is the one the charter already states:
+a unit test that never touches the runtime is not evidence about the runtime.

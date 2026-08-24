@@ -208,14 +208,15 @@ export async function serveScreen(
     if (!(await permitted(policy.addressLimiter, source))) return { kind: "address-limited" };
   }
 
-  const account = await store.accountByScreenKey(await screenKeyFingerprint(key));
+  const poll = await store.pollByScreenKey(await screenKeyFingerprint(key));
+  const account = poll?.account ?? null;
   if (account === null) return { kind: "unknown-key" };
 
   if (!(await permitted(policy.accountLimiter, account.screenKeyFingerprint))) {
     return { kind: "account-limited" };
   }
 
-  const screen: Screen | null = await store.readScreen(account.id);
+  const screen: Screen | null = poll?.screen ?? null;
   if (screen === null) return { kind: "not-rendered-yet" };
 
   const ageMs = Math.max(0, request.now - screen.renderedAt);

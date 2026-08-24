@@ -13,7 +13,7 @@
  */
 
 import type { SealedToken } from "./crypto.ts";
-import type { Account, Screen, Store } from "./store.ts";
+import type { Account, PollResult, Screen, Store } from "./store.ts";
 
 interface AccountEntry {
   account: Account;
@@ -28,6 +28,7 @@ function copyToken(token: SealedToken): SealedToken {
 function copyAccount(account: Account): Account {
   return {
     id: account.id,
+    ownerTag: account.ownerTag,
     region: account.region,
     token: copyToken(account.token),
     screenKeyFingerprint: account.screenKeyFingerprint,
@@ -41,6 +42,7 @@ function copyAccount(account: Account): Account {
 export class MemoryStore implements Store {
   private readonly accounts = new Map<string, AccountEntry>();
   private readonly accountIdsByScreenKey = new Map<string, string>();
+  private readonly accountIdsByOwnerTag = new Map<string, string>();
   private readonly screens = new Map<string, Screen>();
   private createdOrder = 0;
   private servicedOrder = 0;
@@ -82,11 +84,22 @@ export class MemoryStore implements Store {
     return entry === undefined ? null : copyAccount(entry.account);
   }
 
-  async accountByScreenKey(fingerprint: string): Promise<Account | null> {
+  async accountByOwner(candidateTags: readonly string[]): Promise<Account | null> {
+    for (const candidateTag of candidateTags) {
+      const accountId = this.accountIdsByOwnerTag.get(candidateTag);
+      if (accountId === undefined) continue;
+      const entry = this.accounts.get(accountId);
+      if (entry !== undefined) return copyAccount(entry.account);
+    }
+    return null;
+  }
+
+  async pollByScreenKey(fingerprint: string): Promise<PollResult | null> {
     const accountId = this.accountIdsByScreenKey.get(fingerprint);
     if (accountId === undefined) return null;
-    const entry = this.accounts.get(accountId);
-    return entry === undefined ? null : copyAccount(entry.account);
+    const account = await this.accountById(accountId);
+    if (account === null) return null;
+    return { account, screen: await this.readScreen(accountId) };
   }
 
   async createAccount(account: Omit<Account, "reauthRequired">): Promise<Account> {
@@ -96,9 +109,13 @@ export class MemoryStore implements Store {
     if (this.accountIdsByScreenKey.has(account.screenKeyFingerprint)) {
       throw new Error("that screen key fingerprint already exists");
     }
+    if (this.accountIdsByOwnerTag.has(account.ownerTag)) {
+      throw new Error("that owner tag already exists");
+    }
 
     const created: Account = {
       id: account.id,
+      ownerTag: account.ownerTag,
       region: account.region,
       token: copyToken(account.token),
       screenKeyFingerprint: account.screenKeyFingerprint,
@@ -114,6 +131,7 @@ export class MemoryStore implements Store {
       lastServicedOrder: null,
     });
     this.accountIdsByScreenKey.set(created.screenKeyFingerprint, created.id);
+    this.accountIdsByOwnerTag.set(created.ownerTag, created.id);
 
     // Like Neon, there is no screens row until the cron has rendered something.
     return copyAccount(created);
@@ -124,6 +142,11 @@ export class MemoryStore implements Store {
     if (entry === undefined) return;
     entry.account.token = copyToken(token);
     entry.account.reauthRequired = false;
+  }
+
+  async replacePrinters(accountId: string, deviceIds: readonly string[]): Promise<void> {
+    const entry = this.accounts.get(accountId);
+    if (entry !== undefined) entry.account.deviceIds = [...deviceIds];
   }
 
   async replaceScreenKey(accountId: string, fingerprint: string): Promise<void> {
@@ -170,6 +193,7 @@ export class MemoryStore implements Store {
     // Keep the cascade structural here too: there is no tombstone and no path
     // which removes the account while retaining its payload or fingerprint.
     this.accountIdsByScreenKey.delete(entry.account.screenKeyFingerprint);
+    this.accountIdsByOwnerTag.delete(entry.account.ownerTag);
     this.accounts.delete(accountId);
     this.screens.delete(accountId);
   }

@@ -60,10 +60,28 @@ rules=(
   'uuid|blocker|Bare UUID literal|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
   'jwt|blocker|JSON Web Token|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}'
   'bearer|blocker|Bearer token literal|[Bb]earer\s+[A-Za-z0-9._~+/-]{20,}'
-  'token-assign|blocker|Token or key assignment with a literal value|(access[_-]?token|refresh[_-]?token|api[_-]?key|apiKey|auth[_-]?token|secret)["'"'"']?\s*[:=]\s*["'"'"'][A-Za-z0-9._~+/-]{16,}'
+  'token-assign|blocker|Token or key assignment with a literal value|(access[_-]?token|refresh[_-]?token|api[_-]?key|apiKey|auth[_-]?token|[Ss][Ee][Cc][Rr][Ee][Tt])["'"'"']?\s*[:=]\s*["'"'"'][A-Za-z0-9._~+/-]{16,}'
   'password-assign|blocker|Password assignment with a literal value|(password|passwd|pwd)["'"'"']?\s*[:=]\s*["'"'"'][^"'"'"'{$][^"'"'"']{3,}'
   'bambu-account|blocker|Bambu Cloud account identifier|(bambu[_-]?(user|email|account)|BAMBU_(USER|EMAIL|ACCOUNT))["'"'"']?\s*[:=]\s*["'"'"']?[^"'"'"'{$ ]+@'
   'private-key|blocker|Private key block|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+  # The hosted tier introduced a database, and a connection string carries its
+  # password inline. Nothing above catches it: the key is usually named
+  # `DATABASE_URL` rather than anything resembling `password`.
+  'postgres-url|blocker|Postgres connection string with credentials|postgres(ql)?://[^:@/"'"'"' ]+:[^@/"'"'"' ]+@'
+  # An encryption key assigned to a key-ish variable name. The trigger is the
+  # value, not the name: 40 or more base64 characters is far longer than any
+  # setting and shorter than anything we would legitimately inline. The letters
+  # are spelled out as classes because `grep -E` runs case-sensitively here, and
+  # the name may carry a suffix — the hosted tier's own key is `TOKEN_KEY_K1`,
+  # which an unanchored `TOKEN_KEY` branch silently misses.
+  #
+  # The value class includes `-` and `_` so base64url is covered. Note what that
+  # is and is not for: `atob` in the Workers runtime actually *rejects* those two
+  # characters, so a base64url key would fail to load. It is still 256 bits of
+  # key material in Git, which is the thing being prevented. Before the class was
+  # widened, 74% of base64url-encoded 32-byte keys went through, measured over
+  # 500 samples.
+  'key-assign|blocker|Encryption or signing key assigned a literal value|([A-Za-z0-9_-]*([Kk][Ee][Yy]|[Kk][Ee][Kk]|[Dd][Ee][Kk])[A-Za-z0-9_-]*)["'"'"']?\s*[:=]\s*["'"'"']?[A-Za-z0-9+/_-]{40,}={0,2}'
   'wifi-ssid|warning|Wi-Fi SSID or network name|(ssid|SSID|wifi[_-]?name)["'"'"']?\s*[:=]\s*["'"'"']?[A-Za-z0-9_-]{3,}'
   'cover-url|warning|Signed or long-lived cover or asset URL|https?://[^"'"'"' ]*(bambulab|bblmw|myqcloud|amazonaws)[^"'"'"' ]*'
 )
@@ -82,10 +100,15 @@ scan_file() {
   local rule id severity desc pattern hits
   for rule in "${rules[@]}"; do
     IFS='|' read -r id severity desc pattern <<<"$rule"
-    # Documentation may name a pattern; it may still never hold a real key or token.
-    if [ "$exempt" = 1 ] && [ "$id" != "jwt" ] && [ "$id" != "private-key" ] && [ "$id" != "bearer" ]; then
-      continue
-    fi
+    # Documentation may name a pattern without holding one, so an exempt path
+    # skips the shape-based rules. It does not skip these: each one matches
+    # material that is unambiguously a live credential wherever it appears, and
+    # setup prose is exactly where somebody pastes a connection string or a key
+    # while writing an example.
+    case "$id" in
+      jwt|private-key|bearer|postgres-url|key-assign) : ;;
+      *) [ "$exempt" = 1 ] && continue ;;
+    esac
     hits=$(grep -nE "$pattern" -- "$path" 2>/dev/null | grep -vE 'secret-scan-allow' | head -5)
     [ -n "$hits" ] || continue
     while IFS= read -r hit; do
@@ -107,9 +130,10 @@ forbidden_paths='(^|/)(\.env($|\.)|\.dev\.vars|\.trmnlp\.yml$|captures/|raw-tele
 while IFS= read -r path; do
   [ -n "$path" ] || continue
   # A directory can be forbidden while still carrying a committed README that
-  # explains why it is forbidden.
+  # explains why it is forbidden. The blank `.dev.vars.example` is the safe
+  # template Wrangler users copy; the real `.dev.vars` remains forbidden.
   case "$path" in
-    */README.md|*/.gitkeep) : ;;
+    */README.md|*/.gitkeep|.dev.vars.example|*/.dev.vars.example) : ;;
     *)
   if printf '%s' "$path" | grep -qE "$forbidden_paths"; then
     findings=$((findings + 1))

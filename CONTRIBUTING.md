@@ -15,11 +15,12 @@ public issue.
 
 | Path | Contents |
 | --- | --- |
-| `bridge/` | The TypeScript bridge: providers, coordinator, normalization, redaction, and the push scheduler. |
-| `bridge/fixtures/` | Sanitized captures, split into `local/`, `cloud/`, and `merged/`. |
+| `bridge/` | The bridge: cloud providers, normalizers, coordinator, payload builder, subscribe-only MQTT client, push scheduler, daemon, and setup CLI. |
+| `bridge/fixtures/` | Sanitized and synthetic fixtures, split into `cloud/` and `merged/`. |
 | `bridge/test/` | Vitest suites, driven by those fixtures. |
 | `plugin/` | The TRMNL Private Plugin: `settings.yml`, shared markup, and the four viewport Liquid templates. |
-| `docs/` | Architecture, protocol notes, plugin contract, development plan, and sources. |
+| `hosted/` | The hosted tier: Neon schema and store, token encryption, and the Cloudflare Worker cron. |
+| `docs/` | Decisions, the plan, what we know of the cloud interface, the plugin contract, and sources. |
 | `scripts/` | `secret-scan.sh` and the agent session launcher. |
 | `examples/` | Configuration examples. Never real values. |
 | `.githooks/` | The pre-commit secret gate. |
@@ -74,7 +75,11 @@ Blockers, which fail the scan:
 - Private IPv4 address literals.
 - TRMNL webhook URLs containing a plugin identifier.
 - Bare UUIDs, JSON Web Tokens, and bearer token literals.
-- Token, key, and password assignments that carry a literal value.
+- Token and password assignments that carry a literal value.
+- Postgres connection strings that carry a password.
+- An encryption key: 40 or more base64 or base64url characters assigned to a
+  name containing `key`, `kek` or `dek`, in any mixture of cases, with any
+  prefix or suffix.
 - Bambu Cloud account identifiers.
 - Private key blocks.
 
@@ -84,11 +89,38 @@ long-lived asset URLs from vendor content domains.
 Forbidden paths, which may never be committed at all regardless of content:
 `.env` files, `.dev.vars`, `.trmnlp.yml`, `captures/`, `raw-telemetry/`,
 `bridge/spikes/`, and any packet capture, certificate, or key file. A README
-inside such a directory is allowed, so the directory can explain itself.
+inside such a directory is allowed, so the directory can explain itself, and so
+is a `.dev.vars.example` whose values are blank. The example is still scanned in
+full, so a filled-in one is refused.
 
 Documentation paths are partially exempt, so that `docs/` can describe a
-pattern without containing one. Every new file outside that exemption, this one
-included, is scanned in full.
+pattern without containing one. The exemption does not cover the rules that
+match unambiguously live material — JSON Web Tokens, bearer tokens, private
+keys, connection strings with a password, and key assignments — because setup
+prose is exactly where somebody pastes a real one while writing an example.
+
+### What it does not catch
+
+The gate is a backstop, not a boundary. Four known gaps, written down so nobody
+mistakes a clean scan for a guarantee:
+
+- **A value with no name beside it.** A bare 44-character base64 key pasted on
+  its own line into a note or a document looks like nothing in particular. The
+  rules key off an assignment.
+- **A value not adjacent to its name.** `wrangler secret put TOKEN_KEY_K1 <<<
+  "…"` keeps the key on the same line but separates it from the name by
+  something that is not `=` or `:`, and a heredoc moves it to the next line
+  entirely. Neither is within reach of a rule that matches a name, a separator
+  and a value. That is one reason `hosted/README.md` tells you to pipe a
+  generated key straight into Wrangler rather than typing it anywhere.
+- **A name the rules do not recognize.** `MASTER_SECRET=` is caught, but
+  `AES256=` is not, and neither is a key shorter than 40 characters, such as a
+  128-bit key in base64. The name list is the project's own vocabulary, not a
+  general one.
+- **Anything reshaped.** Split across lines, re-encoded, or stored in a binary,
+  and no regex will find it.
+
+Read your own diff. That is the part that actually works.
 
 ### `--no-verify` is never acceptable
 
@@ -191,10 +223,14 @@ Before opening a pull request:
 
 ```sh
 cd bridge && pnpm typecheck && pnpm test
+cd ../hosted && pnpm typecheck && pnpm test && pnpm exec wrangler deploy --dry-run
 scripts/secret-scan.sh --tree
 ```
 
-Continuous integration runs the same checks on Node 22 and Node 24.
+Continuous integration runs the same checks: the secret scan over the whole
+tree, the bridge on Node 22 and Node 24, and the hosted tier including the
+bundle. The `--dry-run` needs no credential; it neither uploads nor
+authenticates.
 
 Expectations for the pull request itself:
 

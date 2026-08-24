@@ -67,3 +67,44 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+  hosted:
+    name: hosted tier
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: hosted
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pnpm
+        run: npm install --global pnpm@11.13.1
+        working-directory: .
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # These tests are the enforcement for the hosted obligation that no token,
+      # device id or webhook URL reaches a log line, including the assertion that
+      # adding a field to the Worker's log detail fails the suite. Running them
+      # only locally would leave that obligation unenforced.
+      - name: Test
+        run: pnpm test
+
+      # Proves the bundle still builds, which is how the Worker would first fail
+      # if a bridge module reached for something the Workers runtime lacks.
+      # Needs no credential: --dry-run neither uploads nor authenticates.
+      - name: Bundle
+        run: pnpm exec wrangler deploy --dry-run

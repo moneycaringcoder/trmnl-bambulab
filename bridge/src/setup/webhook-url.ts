@@ -10,8 +10,18 @@
  */
 
 export const TRMNL_WEBHOOK_PATH_PREFIX = "/api/custom_plugins/";
-const TRMNL_HOSTS = ["usetrmnl.com", "www.usetrmnl.com"];
-const EXPECTED_SHAPE = "https://usetrmnl.com/api/custom_plugins/<uuid>";
+
+/**
+ * Both hosts are TRMNL's own. `trmnl.com` is what the current docs and the
+ * plugin editor hand out, and it is what a real account was observed to give.
+ * `usetrmnl.com` is the older form and still resolves.
+ *
+ * Neither deserves a warning. Until a real webhook was tested this module
+ * warned about `trmnl.com`, which is worse than saying nothing: a warning on
+ * the correct value teaches the user to stop reading the output.
+ */
+const TRMNL_HOSTS = ["trmnl.com", "www.trmnl.com", "usetrmnl.com", "www.usetrmnl.com"];
+const EXPECTED_SHAPE = "https://trmnl.com/api/custom_plugins/<uuid>";
 
 const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const HEX32 = /^[0-9a-fA-F]{32}$/;
@@ -89,7 +99,7 @@ export function validateWebhookUrl(raw: string): WebhookUrlResult {
   const warnings: string[] = [];
   if (!TRMNL_HOSTS.includes(parsed.hostname)) {
     warnings.push(
-      `The host is \`${parsed.hostname}\` rather than usetrmnl.com. That is expected for a self-hosted TRMNL instance, and wrong otherwise.`,
+      `The host is \`${parsed.hostname}\`, which is neither trmnl.com nor usetrmnl.com. That is expected for a self-hosted TRMNL instance, and wrong otherwise.`,
     );
   }
 

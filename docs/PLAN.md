@@ -9,49 +9,53 @@ Last revised: 2026-08-24.
 
 | Area | State |
 | --- | --- |
-| Bambu Cloud sign-in | Code complete, **never run against a real account** |
-| Cloud HTTP reads | Code complete, responses unverified |
-| Cloud MQTT reads | Code complete, never run against the real broker |
-| Normalizers | Complete, tested against synthetic fixtures |
+| Bambu Cloud sign-in | **Confirmed against a real account** |
+| Cloud HTTP reads | **Confirmed.** Gives identity and online state, and nothing more |
+| Cloud MQTT reads | **Confirmed.** Progress, layer, remaining time and temperatures all arriving |
+| Normalizers | Complete, tested, corrected by real data |
 | Coordinator | Complete, tested |
 | Webhook payload | Complete. Three printers fit in 1338 of 2048 bytes |
 | Push scheduler | Complete, tested |
-| Bridge daemon | Complete. Smoke tested end to end against a fake cloud and a fake TRMNL |
-| TRMNL templates | Complete. Lints, and rendered at 800x480 1-bit |
-| Hosted backend | In progress |
+| Bridge daemon | **Running against real printers, pushing to a real display** |
+| TRMNL templates | Complete, rendered at 800x480 1-bit. Not yet seen on hardware |
+| Hosted backend | Push engine complete; enrolment blocked on an identity provider |
 
-Every claim about Bambu Cloud in this repository comes from reverse-engineering
-notes, not from a response we have seen. Fixtures written by hand are named
-`*.synthetic.json` and are never described as captured.
+First real sign-in: 2026-08-24. What it confirmed, and the two places it
+contradicted the community notes, are recorded in `docs/BAMBU-PROTOCOL.md`.
+
+Fixtures written by hand are named `*.synthetic.json` and are never described as
+captured.
 
 ## What the owner needs to do
 
-**One thing, and it unblocks everything else: sign in.**
+Sign-in is done, the printers are found, and the bridge is pushing. One thing
+remains, and it is the only thing between here and a working display.
 
-```sh
-cd bridge && pnpm install && pnpm setup
+**Put the templates into your TRMNL plugin, then look at the screen.**
+
+The payload is arriving — TRMNL returns 200 — but a Private Plugin renders
+whatever markup is in its editor, and yours is still empty. So the data is
+there and nothing is drawing it.
+
+Copy the contents of these four files into the matching markup boxes in the
+plugin's editor, and `plugin/src/shared.liquid` into the shared markup box:
+
+```text
+plugin/src/full.liquid
+plugin/src/half_horizontal.liquid
+plugin/src/half_vertical.liquid
+plugin/src/quadrant.liquid
+plugin/src/shared.liquid
 ```
 
-Choose your region, sign in with the email and password you use for Bambu Handy,
-and enter the code Bambu emails you. Your password and the code are sent once
-and are never written anywhere.
+Then tell me whether it reads well from across the room, because that is the
+one judgement I cannot make from here. `plugin/_build/*.png` is what I think it
+looks like; the hardware is the authority.
 
-Then say what happened. Any of these is a useful answer:
-
-- It worked, and it listed my printers.
-- It asked for a code and then refused the code.
-- It failed at this step, with this message.
-
-That single result tells us whether the login flow, the header set, the token
-format and the device-listing endpoint are right. All four are currently
-guesses. Nothing downstream can be trusted until it passes.
-
-If it works, `pnpm start` will then run the bridge for real, and
-`docs/BAMBU-PROTOCOL.md` is where the result gets recorded.
-
-Later, and not blocking: creating the TRMNL Private Plugin and handing over its
-webhook URL, looking at a physical display, and deploying to Cloudflare and
-Neon.
+Later, and not blocking: deploying the hosted tier to Cloudflare and Neon. Read
+`hosted/README.md` first — two of the six hosted gates in `AGENTS.md` are open,
+which is fine for you testing with your own account and not fine for anyone
+else's token.
 
 ## Done
 

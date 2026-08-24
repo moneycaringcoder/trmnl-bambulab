@@ -58,4 +58,16 @@ describe("validateWebhookUrl", () => {
     expect(result.ok && result.warnings).toHaveLength(1);
     expect(result.ok && result.warnings[0]).toMatch(/self-hosted/i);
   });
+
+  // A real account hands out `trmnl.com`. This module used to warn about it,
+  // which is worse than silence: a warning on the correct value teaches the
+  // user to stop reading the output. Both of TRMNL's own hosts are accepted
+  // without comment.
+  it("says nothing about either of TRMNL's own hosts", () => {
+    for (const host of ["trmnl.com", "www.trmnl.com", "usetrmnl.com", "www.usetrmnl.com"]) {
+      const result = validateWebhookUrl(syntheticWebhookUrl(host));
+      expect(result.ok).toBe(true);
+      expect(result.ok && result.warnings).toEqual([]);
+    }
+  });
 });

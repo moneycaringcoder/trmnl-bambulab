@@ -141,7 +141,8 @@ async function checkTrmnl(config: BridgeConfig, push: boolean): Promise<number> 
   good(`Synthetic payload is ${payload.bytes} bytes, under the ${config.trmnl.maxPayloadBytes}-byte ceiling.`);
 
   if (!push) {
-    step("Not sending anything: a push spends part of the hourly budget. Add `--push` to send one.");
+    step("Not sending anything: a push spends part of the hourly budget.");
+    step("Run `pnpm run setup doctor --push` to send one.");
     return 0;
   }
 

@@ -1,11 +1,16 @@
 /**
  * `pnpm setup` — the entry point for the setup CLI.
  *
- *   pnpm setup            interactive configuration
- *   pnpm setup doctor     re-verify the saved configuration, change nothing
- *   pnpm setup doctor --push   also send one synthetic TRMNL push
- *   pnpm setup reauth     sign in again and replace only the token
- *   pnpm setup webhook    set only the TRMNL webhook URL
+ *   pnpm setup                     interactive configuration
+ *   pnpm setup doctor              re-verify the saved config, change nothing
+ *   pnpm setup reauth              sign in again and replace only the token
+ *   pnpm setup webhook             set only the TRMNL webhook URL
+ *   pnpm run setup doctor --push   also send one synthetic TRMNL push
+ *
+ * Note the `run` in that last line. `setup` is also one of pnpm's own
+ * commands, so a bare `pnpm setup doctor --push` has its flag eaten by pnpm's
+ * option parser before the script ever sees it. `pnpm run` disambiguates, and
+ * so does `pnpm setup doctor -- --push`.
  *
  * The CLI never takes a secret as a command-line argument: process arguments
  * are visible to every user on the machine.
@@ -21,10 +26,11 @@ import { advise, say } from "./ui.ts";
 
 const USAGE = [
   "Usage:",
-  "  pnpm setup                  configure the bridge interactively",
-  "  pnpm setup doctor [--push]  check the saved configuration",
-  "  pnpm setup reauth           sign in again and refresh the token",
-  "  pnpm setup webhook          set the TRMNL webhook URL",
+  "  pnpm setup                      configure the bridge interactively",
+  "  pnpm setup doctor               check the saved configuration",
+  "  pnpm run setup doctor --push    check it and send one test push",
+  "  pnpm setup reauth               sign in again and refresh the token",
+  "  pnpm setup webhook              set the TRMNL webhook URL",
   "",
   "Docs: README.md",
 ];

@@ -7,10 +7,13 @@
 
 export const SCHEMA_VERSION = 1 as const;
 
-export type ProviderId = "cloud";
-
-/** Coarse mode exported to TRMNL. Never expose provider detail beyond this. */
-export type ConnectionMode = "cloud" | "offline";
+/**
+ * Which read path an observation came from. Both are Bambu Cloud; the
+ * distinction exists because they disagree, and when they do, the live MQTT
+ * report is the one to believe. It is internal: the display is only ever told
+ * the coarse `cloud` status, never which path produced a field.
+ */
+export type ProviderId = "cloud-http" | "cloud-mqtt";
 
 export type DisplayState =
   | "idle"
@@ -137,15 +140,78 @@ export interface FieldProvenance {
   receivedAt: number;
 }
 
+/** One printer, fully merged and ready to render. */
 export interface Snapshot {
-  schemaVersion: typeof SCHEMA_VERSION;
-  connection: {
-    mode: ConnectionMode;
-    cloud: ProviderStatus;
-    /** True when the newest observation is older than the staleness window. */
-    stale: boolean;
-  };
+  /** Opaque internal key. Never a serial, never exported. */
+  printerKey: string;
   state: PrinterState;
   /** Diagnostics only. `buildWebhookPayload` must drop this. */
   provenance: Record<string, FieldProvenance>;
 }
+
+/**
+ * The display side of the contract.
+ *
+ * Snake_case, because this is what Liquid reads. Short keys where the meaning
+ * survives, because the whole body has to fit in 2 kB for a standard TRMNL
+ * account and three printers.
+ *
+ * Anything the bridge has not been told is `null`, and a template that reads a
+ * null must show a gap rather than a zero. Formatting that carries meaning is
+ * done here rather than in Liquid: `remaining` is already "1h 16m", because
+ * dividing minutes in a template is how a printer ends up claiming it will
+ * finish in 0 hours.
+ */
+export interface WebhookPrinter {
+  state: DisplayState;
+  /** Raw provider token, preserved even when `state` is `unknown`. */
+  raw_state: string | null;
+  name: string | null;
+  model: string | null;
+  online: boolean | null;
+  /** True when the newest observation for this printer is too old to trust. */
+  stale: boolean;
+  /** Whole percent, 0 to 100. */
+  progress: number | null;
+  layer: number | null;
+  layers: number | null;
+  /** Preformatted, e.g. "1h 16m" or "4m". */
+  remaining: string | null;
+  stage: string | null;
+  nozzle: number | null;
+  nozzle_target: number | null;
+  bed: number | null;
+  bed_target: number | null;
+  material: string | null;
+  /** Only when the user opted in, because a job name can be a private model. */
+  job: string | null;
+  /** One short line, or null. Never an empty string. */
+  alert: string | null;
+}
+
+export interface WebhookVariables {
+  v: typeof SCHEMA_VERSION;
+  /** Bridge clock, ISO 8601 to the minute. Seconds would waste bytes. */
+  updated_at: string;
+  /** Ordered most interesting first. At most `MAX_PRINTERS_SHOWN` entries. */
+  printers: WebhookPrinter[];
+  /** How many chosen printers did not fit. Zero in the normal case. */
+  hidden: number;
+  /**
+   * Coarse reachability of Bambu Cloud, so the display can distinguish a
+   * printer being off from the bridge being unable to see anything. Never more
+   * detail than this: the provider is not the user's business.
+   */
+  cloud: ProviderStatus;
+}
+
+/** Exactly what is POSTed to the TRMNL webhook. */
+export interface WebhookPayload {
+  merge_variables: WebhookVariables;
+}
+
+/**
+ * Three fills an 800x480 screen without shrinking the numbers past reading
+ * distance, and three is also what fits the 2 kB body.
+ */
+export const MAX_PRINTERS_SHOWN = 3;

@@ -1,0 +1,17 @@
+{
+  "devices": [
+    {
+      "dev_id": "$DEV",
+      "name": "Workshop printer",
+      "dev_model_name": "Synthetic printer model",
+      "dev_product_name": "Synthetic fallback model",
+      "online": true,
+      "print_status": "IDLE"
+    },
+    {
+      "dev_id": 7,
+      "name": "Malformed synthetic entry",
+      "online": "yes"
+    }
+  ]
+}

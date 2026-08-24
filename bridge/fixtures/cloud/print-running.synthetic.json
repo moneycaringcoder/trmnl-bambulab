@@ -1,0 +1,12 @@
+{
+  "devices": [
+    {
+      "dev_id": "$DEV",
+      "dev_name": "Workshop printer",
+      "dev_online": true,
+      "task_name": "Synthetic example job",
+      "task_status": "RUNNING",
+      "progress": 42
+    }
+  ]
+}

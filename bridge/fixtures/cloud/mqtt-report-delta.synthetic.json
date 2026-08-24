@@ -1,0 +1,7 @@
+{
+  "print": {
+    "gcode_state": "PAUSE",
+    "mc_percent": 43,
+    "nozzle_temper": 212.3
+  }
+}

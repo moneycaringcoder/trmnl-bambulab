@@ -80,9 +80,17 @@ class FakeBroker implements ByteStream {
   }
 }
 
-/** Timers that fire only when a test says so. */
-function controllableTimers(): Timers & { fireRepeats(): void } {
+/**
+ * Timers that fire only when a test says so, and that report whether the
+ * handshake deadline is still armed.
+ */
+function controllableTimers(): Timers & {
+  fireRepeats(): void;
+  fireOnce(): void;
+  onceArmed(): boolean;
+} {
   const repeats: (() => void)[] = [];
+  let once: (() => void) | null = null;
   return {
     repeat(_everyMs, run) {
       repeats.push(run);
@@ -91,12 +99,20 @@ function controllableTimers(): Timers & { fireRepeats(): void } {
         if (at >= 0) repeats.splice(at, 1);
       };
     },
-    once() {
-      // A test that wants the handshake deadline to fire drives it directly.
-      return () => undefined;
+    once(_afterMs, run) {
+      once = run;
+      return () => {
+        once = null;
+      };
     },
     fireRepeats() {
       for (const run of [...repeats]) run();
+    },
+    fireOnce() {
+      once?.();
+    },
+    onceArmed() {
+      return once !== null;
     },
   };
 }
@@ -179,6 +195,57 @@ describe("a successful session", () => {
       PACKET.pingreq,
       PACKET.disconnect,
     ]);
+  });
+
+  // The bug this pins was found by pointing the client at Bambu's real broker:
+  // the handshake deadline stayed armed after the subscription went live and
+  // tore down every healthy session at twenty seconds. It was invisible in a
+  // test suite and nearly invisible in the log, because reconnecting worked.
+  // Sustained reconnect churn is what Bambu bans accounts for.
+  it("disarms the handshake deadline once the subscription is live", async () => {
+    const timers = controllableTimers();
+    const broker = new FakeBroker([CONNACK_OK, SUBACK_OK], true);
+    let armedAfterSubscribe = true;
+
+    const session = new MqttSession(broker, {
+      ...CONNECT_OPTIONS,
+      timers,
+      onReport: () => undefined,
+      onSubscribed: () => {
+        armedAfterSubscribe = timers.onceArmed();
+        // Firing it now must do nothing at all, because it is no longer armed.
+        timers.fireOnce();
+      },
+    });
+
+    const end = session.run();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(armedAfterSubscribe).toBe(false);
+
+    // Still open: the deadline did not close it.
+    expect(broker.closed).toBe(false);
+    await session.stop();
+    expect(await end).toEqual({ reason: "closed-by-caller" });
+  });
+
+  // The deadline still has to do its job when the broker accepts the socket and
+  // then says nothing, which is a real failure mode.
+  it("still gives up when the handshake is never answered", async () => {
+    const timers = controllableTimers();
+    const broker = new FakeBroker([], true);
+    const session = new MqttSession(broker, {
+      ...CONNECT_OPTIONS,
+      timers,
+      onReport: () => undefined,
+    });
+
+    const end = session.run();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(timers.onceArmed()).toBe(true);
+    timers.fireOnce();
+
+    expect(await end).toEqual({ reason: "closed-by-caller" });
+    expect(broker.closed).toBe(true);
   });
 });
 

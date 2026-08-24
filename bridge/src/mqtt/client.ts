@@ -103,6 +103,7 @@ export class MqttSession {
   private readonly reader = new PacketReader();
   private readonly timers: Timers;
   private cancelKeepAlive: (() => void) | null = null;
+  private cancelHandshakeDeadline: (() => void) | null = null;
   private stopping = false;
   private subscribed = false;
 
@@ -133,7 +134,14 @@ export class MqttSession {
       return { reason: "failed", detail: `could not send the connect packet: ${describe(cause)}` };
     }
 
-    const cancelDeadline = this.timers.once(
+    // Covers the handshake only, and is cancelled the moment the subscription
+    // goes live. It has to be cancelled there rather than in the `finally`
+    // below, because `finally` does not run until the session is already over:
+    // leaving it armed tore down every healthy connection at twenty seconds and
+    // reconnected, which is the reconnect churn Bambu bans accounts for. It went
+    // unnoticed until the client was pointed at the real broker, because
+    // reconnecting worked.
+    this.cancelHandshakeDeadline = this.timers.once(
       this.options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
       () => {
         // Nothing to unwind but the socket: an unanswered handshake leaves no
@@ -147,7 +155,8 @@ export class MqttSession {
     } catch (cause) {
       return { reason: "failed", detail: describe(cause) };
     } finally {
-      cancelDeadline();
+      this.cancelHandshakeDeadline?.();
+      this.cancelHandshakeDeadline = null;
       this.cancelKeepAlive?.();
       this.cancelKeepAlive = null;
     }
@@ -197,6 +206,11 @@ export class MqttSession {
               detail: `the broker refused ${refused} of ${packet.returnCodes.length} subscriptions`,
             };
           }
+          // The handshake is over, so its deadline must stop being armed. This
+          // is the line whose absence killed a healthy session every twenty
+          // seconds.
+          this.cancelHandshakeDeadline?.();
+          this.cancelHandshakeDeadline = null;
           if (!this.subscribed) {
             this.subscribed = true;
             this.options.onSubscribed?.();

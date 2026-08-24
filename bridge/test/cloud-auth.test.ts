@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   LOGIN_PATH,
   SEND_EMAIL_CODE_PATH,
-  TFA_PATH,
   advance,
   beginPasswordLogin,
   type AuthPhase,
@@ -99,43 +98,64 @@ describe("verification-code branch", () => {
 });
 
 describe("two-factor branch", () => {
-  it("prompts for the code and posts it with the tfaKey", () => {
+  // Bambu's authenticator endpoint has answered 403 missing_cookie since
+  // 2026-08-01, so a two-factor account is routed to the emailed code instead.
+  // See docs/DECISIONS.md D8.
+  it("asks Bambu to email a code instead of calling the two-factor endpoint", () => {
     const start = beginPasswordLogin(ACCOUNT, PASSWORD);
     const asked = advance(start.phase, {
       kind: "login-result",
       response: { loginType: "tfa", tfaKey: "key-1" },
     });
-    expect(asked.phase).toEqual({ kind: "await-tfa-code", tfaKey: "key-1" });
-    expect(asked.request).toBeNull();
-    expect(asked.prompt?.field).toBe("tfa-code");
 
-    const submitted = advance(asked.phase, { kind: "tfa-code", code: "654321" });
-    expect(submitted.phase).toEqual({ kind: "await-tfa-result" });
-    expect(submitted.request).toEqual({
-      path: TFA_PATH,
-      body: { tfaKey: "key-1", tfaCode: "654321" },
+    expect(asked.phase).toEqual({ kind: "await-email-code", account: ACCOUNT });
+    expect(asked.request).toEqual({
+      path: SEND_EMAIL_CODE_PATH,
+      body: { email: ACCOUNT, type: "codeLogin" },
     });
+    expect(asked.prompt?.field).toBe("email-code");
+  });
 
+  it("tells the user to check email rather than their authenticator app", () => {
+    const start = beginPasswordLogin(ACCOUNT, PASSWORD);
+    const asked = advance(start.phase, {
+      kind: "login-result",
+      response: { loginType: "tfa", tfaKey: "key-1" },
+    });
+    expect(asked.prompt?.message).toMatch(/emailed code/);
+    expect(asked.prompt?.message).toMatch(/rather than your authenticator app/);
+  });
+
+  it("never sends the tfaKey anywhere", () => {
+    const start = beginPasswordLogin(ACCOUNT, PASSWORD);
+    const asked = advance(start.phase, {
+      kind: "login-result",
+      response: { loginType: "tfa", tfaKey: "key-1" },
+    });
+    expect(JSON.stringify(asked)).not.toContain("key-1");
+  });
+
+  it("does not need a tfaKey to proceed", () => {
+    const start = beginPasswordLogin(ACCOUNT, PASSWORD);
+    const asked = advance(start.phase, { kind: "login-result", response: { loginType: "tfa" } });
+    expect(asked.phase.kind).toBe("await-email-code");
+  });
+
+  it("completes through the same code exchange as a verifyCode account", () => {
+    const asked = advance(
+      { kind: "await-login-result", account: ACCOUNT },
+      { kind: "login-result", response: { loginType: "tfa" } },
+    );
+    const submitted = advance(asked.phase, { kind: "email-code", code: "654321" });
+    expect(submitted.request).toEqual({
+      path: LOGIN_PATH,
+      body: { account: ACCOUNT, code: "654321" },
+    });
     const done = advance(submitted.phase, {
       kind: "login-result",
       response: { accessToken: TOKEN },
     });
     expect(done.phase).toEqual({ kind: "authenticated", accessToken: TOKEN });
-  });
-
-  it("fails when the cloud asks for two-factor without a key", () => {
-    const start = beginPasswordLogin(ACCOUNT, PASSWORD);
-    const failure = expectFailure(
-      advance(start.phase, { kind: "login-result", response: { loginType: "tfa" } }),
-    );
-    expect(failure.code).toBe("missing-tfa-key");
-  });
-
-  it("fails when the two-factor step returns no token", () => {
-    const failure = expectFailure(
-      advance({ kind: "await-tfa-result" }, { kind: "login-result", response: {} }),
-    );
-    expect(failure.code).toBe("no-token");
   });
 });
 
@@ -161,9 +181,9 @@ describe("unknown and out-of-order steps", () => {
 
     const settled: AuthPhase = {
       kind: "failed",
-      failure: { code: "no-token", message: "m", guidance: "g" },
+      failure: { code: "code-rejected", message: "m", guidance: "g" },
     };
-    expect(expectFailure(advance(settled, { kind: "tfa-code", code: "1" })).code).toBe(
+    expect(expectFailure(advance(settled, { kind: "email-code", code: "1" })).code).toBe(
       "unexpected-event",
     );
   });

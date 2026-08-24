@@ -17,7 +17,6 @@ import {
 } from "../providers/bambu-cloud/auth.ts";
 import { CloudError, request } from "../providers/bambu-cloud/http.ts";
 import type { CloudHosts } from "../providers/bambu-cloud/hosts.ts";
-import { looksLikeAccessToken } from "../providers/bambu-cloud/token.ts";
 import { preference } from "../providers/bambu-cloud/api.ts";
 import { accountHintFor } from "./config.ts";
 import { SetupError } from "./errors.ts";
@@ -41,7 +40,7 @@ export function describeCloudError(error: unknown, during: CloudContext): SetupE
   if (!(error instanceof CloudError)) {
     return new SetupError(
       "Bambu Cloud request failed for an unexpected reason.",
-      "Run the command again. If it keeps failing, set up `Direct LAN only` mode, which needs no cloud account.",
+      "Run the command again. If it keeps failing, check this machine's internet connection and whether status.bambulab.com reports an incident.",
     );
   }
 
@@ -61,12 +60,12 @@ export function describeCloudError(error: unknown, during: CloudContext): SetupE
       }
       return new SetupError(
         "Your Bambu Cloud token expired or was revoked.",
-        "Run `pnpm setup reauth` to get a fresh one. Direct LAN monitoring keeps working meanwhile.",
+        "Run `pnpm setup reauth` to get a fresh one. Bambu Cloud is the only data source, so the display stops updating until you do.",
       );
     case "blocked-by-cloudflare":
       return new SetupError(
         "Bambu Cloud answered with a bot challenge instead of an API response.",
-        "Wait several minutes and try once more. Do not retry in a loop. If it persists, use `Direct LAN only` mode, which needs no cloud account.",
+        "Wait several minutes and try once more. Do not retry in a loop, which makes a challenge more likely, not less.",
       );
     case "rate-limited":
       return new SetupError(
@@ -76,7 +75,7 @@ export function describeCloudError(error: unknown, during: CloudContext): SetupE
     case "server-error":
       return new SetupError(
         "Bambu Cloud had a server error.",
-        "Nothing is wrong with your configuration. Try again in a few minutes; Direct LAN monitoring is unaffected.",
+        "Nothing is wrong with your configuration. Try again in a few minutes.",
       );
     case "timeout":
       return new SetupError(
@@ -91,7 +90,7 @@ export function describeCloudError(error: unknown, during: CloudContext): SetupE
     case "client-error":
       return new SetupError(
         `Bambu Cloud refused the request (HTTP ${error.status}).`,
-        "This usually means the cloud API changed. Use `Direct LAN only` mode for now and check for an update to this project.",
+        "This usually means the reverse-engineered cloud API changed. Check for an update to this project, and please open an issue with the status code.",
       );
   }
 }
@@ -153,11 +152,7 @@ export async function interactiveLogin(hosts: CloudHosts): Promise<CloudSession>
         throw describeCloudError(error, "login");
       }
 
-      if (
-        phase.kind === "await-login-result" ||
-        phase.kind === "await-code-login-result" ||
-        phase.kind === "await-tfa-result"
-      ) {
+      if (phase.kind === "await-login-result" || phase.kind === "await-code-login-result") {
         transition = advance(phase, { kind: "login-result", response });
         continue;
       }
@@ -169,18 +164,13 @@ export async function interactiveLogin(hosts: CloudHosts): Promise<CloudSession>
       say();
       step(transition.prompt.message);
       const code = await askSecret("Code (hidden, not stored)");
-      transition = advance(
-        phase,
-        transition.prompt.field === "email-code"
-          ? { kind: "email-code", code }
-          : { kind: "tfa-code", code },
-      );
+      transition = advance(phase, { kind: "email-code", code });
       continue;
     }
 
     throw new SetupError(
       "The Bambu Cloud sign-in stopped without producing a token.",
-      "Run `pnpm setup` again. If it keeps happening, use `Direct LAN only` mode, which needs no cloud account.",
+      "Run `pnpm setup` again. If it keeps happening, paste an access token exported from another Bambu client instead, and please open an issue.",
     );
   }
 }
@@ -192,17 +182,20 @@ export async function pasteToken(): Promise<CloudSession> {
   step("The token is hidden while you type and is never echoed back.");
   say();
 
+  // No format check: Bambu tokens are opaque and the format has changed before,
+  // so the only thing worth rejecting is a paste that obviously went wrong.
+  // Whether the token actually works is settled a moment later by `verifyToken`.
   const accessToken = await askValid(
     "Access token (hidden)",
     (raw) => {
       const value = raw.trim();
-      return looksLikeAccessToken(value)
+      return value.length > 0 && !/\s/.test(value)
         ? { ok: true as const, value }
         : {
             ok: false as const,
-            message: "That does not look like a Bambu Cloud access token.",
+            message: "That is empty, or it contains a space or a line break.",
             guidance:
-              "A token has three dot-separated parts. Copy the whole value, with nothing trimmed from either end.",
+              "Copy the whole token value, with nothing trimmed from either end and no surrounding quotes.",
           };
     },
     { secret: true },

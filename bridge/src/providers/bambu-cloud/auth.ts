@@ -1,9 +1,18 @@
 /**
  * Bambu Cloud login, as a pure state machine.
  *
- * The three observed login branches are password-only, email verification code,
- * and two-factor. All of them are reverse-engineered from OpenBambuAPI and
- * ha-bambulab and can change without notice.
+ * Two observed login branches: a password alone is sometimes enough, and
+ * otherwise the cloud emails a verification code. Both are reverse-engineered
+ * from OpenBambuAPI and ha-bambulab and can change without notice.
+ *
+ * There is deliberately no authenticator-app branch. Bambu's two-factor
+ * endpoint lives on the website host rather than the API host, and since
+ * 2026-08-01 it has rejected every submission with HTTP 403 and a body naming
+ * `missing_cookie`: it requires a CSRF cookie that the API-host login sequence
+ * never issues, and it refuses before the code is even examined. An account
+ * with two-factor enabled therefore signs in with an emailed code, which runs
+ * on the host we already talk to and needs no cookie. See `docs/DECISIONS.md`
+ * D8 for the full reasoning.
  *
  * This module performs no I/O. It imports nothing from `node:*`, never calls
  * `fetch`, and never writes to a stream. The caller drives it: it performs the
@@ -30,12 +39,7 @@ export interface CloudRequest {
 }
 
 export interface AuthFailure {
-  code:
-    | "unknown-login-type"
-    | "missing-tfa-key"
-    | "no-token"
-    | "code-rejected"
-    | "unexpected-event";
+  code: "unknown-login-type" | "code-rejected" | "unexpected-event";
   /** What happened. Never a secret, never a response body. */
   message: string;
   /** What the user does next, in the imperative. */
@@ -46,18 +50,15 @@ export type AuthPhase =
   | { kind: "await-login-result"; account: string }
   | { kind: "await-email-code"; account: string }
   | { kind: "await-code-login-result"; account: string }
-  | { kind: "await-tfa-code"; tfaKey: string }
-  | { kind: "await-tfa-result" }
   | { kind: "authenticated"; accessToken: string }
   | { kind: "failed"; failure: AuthFailure };
 
 export type AuthEvent =
   | { kind: "login-result"; response: LoginResponse }
-  | { kind: "email-code"; code: string }
-  | { kind: "tfa-code"; code: string };
+  | { kind: "email-code"; code: string };
 
 export interface AuthPrompt {
-  field: "email-code" | "tfa-code";
+  field: "email-code";
   /** Shown verbatim by the caller. Says why the secret is needed. */
   message: string;
 }
@@ -72,9 +73,11 @@ export interface AuthTransition {
 
 export const LOGIN_PATH = "/v1/user-service/user/login";
 export const SEND_EMAIL_CODE_PATH = "/v1/user-service/user/sendemail/code";
-export const TFA_PATH = "/v1/user-service/user/tfa";
 
 const RERUN = "Run `pnpm setup` again to start a fresh login.";
+
+const ONE_USE =
+  "It is used for this one request and is never written to disk, logged, or shown on screen.";
 
 function fail(
   code: AuthFailure["code"],
@@ -88,10 +91,14 @@ function fail(
   };
 }
 
-/** An empty string is a token that is not there. */
+/**
+ * The single place a token enters the bridge from the cloud, so it is also the
+ * place surrounding whitespace is dropped. An empty string is a token that is
+ * not there.
+ */
 function tokenOf(response: LoginResponse): string | null {
-  const token = response.accessToken;
-  return typeof token === "string" && token.length > 0 ? token : null;
+  const token = typeof response.accessToken === "string" ? response.accessToken.trim() : "";
+  return token.length > 0 ? token : null;
 }
 
 export function beginPasswordLogin(account: string, password: string): AuthTransition {
@@ -128,26 +135,6 @@ export function advance(phase: AuthPhase, event: AuthEvent): AuthTransition {
     );
   }
 
-  if (phase.kind === "await-tfa-code" && event.kind === "tfa-code") {
-    return {
-      phase: { kind: "await-tfa-result" },
-      request: { path: TFA_PATH, body: { tfaKey: phase.tfaKey, tfaCode: event.code } },
-      prompt: null,
-    };
-  }
-
-  if (phase.kind === "await-tfa-result" && event.kind === "login-result") {
-    const token = tokenOf(event.response);
-    if (token !== null) {
-      return { phase: { kind: "authenticated", accessToken: token }, request: null, prompt: null };
-    }
-    return fail(
-      "no-token",
-      "Bambu Cloud accepted the two-factor step but returned no access token.",
-      `Confirm the code came from the authenticator app bound to this account. ${RERUN}`,
-    );
-  }
-
   return fail(
     "unexpected-event",
     `Login step "${event.kind}" does not belong in phase "${phase.kind}".`,
@@ -161,34 +148,24 @@ function afterFirstLogin(account: string, response: LoginResponse): AuthTransiti
     return { phase: { kind: "authenticated", accessToken: token }, request: null, prompt: null };
   }
 
-  if (response.loginType === "verifyCode") {
+  // Both code-bearing branches are answered the same way, because the emailed
+  // code is the only second factor that currently works. Only the explanation
+  // differs, and the two-factor explanation has to correct the user's
+  // reasonable assumption that they should open their authenticator app.
+  const why =
+    response.loginType === "verifyCode"
+      ? "Bambu Cloud emailed a verification code to that account."
+      : response.loginType === "tfa"
+        ? "This account has two-factor authentication enabled. Bambu's authenticator endpoint has " +
+          "rejected every code since 2026-08-01, so signing in uses an emailed code instead: " +
+          "check your inbox rather than your authenticator app."
+        : null;
+
+  if (why !== null) {
     return {
       phase: { kind: "await-email-code", account },
       request: { path: SEND_EMAIL_CODE_PATH, body: { email: account, type: "codeLogin" } },
-      prompt: {
-        field: "email-code",
-        message:
-          "Bambu Cloud emailed a verification code to that account. It is used for this one request and is never written to disk.",
-      },
-    };
-  }
-
-  if (response.loginType === "tfa") {
-    if (typeof response.tfaKey !== "string" || response.tfaKey.length === 0) {
-      return fail(
-        "missing-tfa-key",
-        "Bambu Cloud asked for a two-factor code but returned no tfaKey.",
-        `This is a cloud-side change rather than a mistake on your side. Retry later, or paste an access token exported from another Bambu client. ${RERUN}`,
-      );
-    }
-    return {
-      phase: { kind: "await-tfa-code", tfaKey: response.tfaKey },
-      request: null,
-      prompt: {
-        field: "tfa-code",
-        message:
-          "This account has two-factor authentication enabled. The code is used for this one request and is never written to disk.",
-      },
+      prompt: { field: "email-code", message: `${why} ${ONE_USE}` },
     };
   }
 

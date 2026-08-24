@@ -1,6 +1,9 @@
 # Research resources
 
-Research date: 2026-08-22. Re-check current docs before implementation because both TRMNL and Bambu firmware/interfaces change.
+Research date: 2026-08-22, revised 2026-08-24. Re-check current docs before
+implementation because both TRMNL and Bambu interfaces change. Entries that
+applied only to a local-network transport were dropped when the project became
+cloud-only; see `docs/DECISIONS.md` D10.
 
 ## TRMNL — primary sources
 
@@ -26,35 +29,37 @@ Research date: 2026-08-22. Re-check current docs before implementation because b
 ## Bambu Lab — official sources
 
 - [Third-party integration](https://wiki.bambulab.com/en/software/third-party-integration) — authorization changes, monitoring exemption, Developer Mode, Bambu Connect, and Local Server SDK.[11]
-- [LAN Mode](https://wiki.bambulab.com/en/knowledge-sharing/enable-lan-mode) — model-specific setup, A-series steps, access code, and LAN behavior.[12]
-- [Security](https://wiki.bambulab.com/en/general/bbl-security) — local MQTT broker, access-code authentication, TLS, and FTPS.[13]
-- [Printer network ports](https://wiki.bambulab.com/en/general/printer-network-ports) — official port matrix including LAN MQTT 8883.[14]
+- [Security](https://wiki.bambulab.com/en/general/bbl-security) — TLS and authentication policy.[13]
 - [Bambu Studio](https://github.com/bambulab/BambuStudio) — official slicer source; note that the optional networking plugin includes non-free libraries.[21]
+- [MQTT limitations notice](https://forum.bambulab.com/t/bambu-lab-mqtt-limitations/83440) — Bambu's own account of temporarily banning accounts over concurrent MQTT connections.[23]
 
-Bambu's public docs establish supported connectivity and policy, but not the complete MQTT telemetry object. Do not describe reverse-engineered fields as an official API.
+Bambu's public docs establish supported connectivity and policy, but not the
+cloud telemetry object. Do not describe reverse-engineered fields as an
+official API. What we believe the interface to be, and how sure we are, is
+recorded in `docs/BAMBU-PROTOCOL.md`.
 
 ## Community protocol references
 
 - [OpenBambuAPI Cloud HTTP](https://github.com/Doridian/OpenBambuAPI/blob/main/cloud-http.md) — observed bearer auth, devices, tasks, projects, cover URLs, cloud MQTT identity, and token caveats.[22]
-- [OpenBambuAPI MQTT](https://github.com/Doridian/OpenBambuAPI/blob/main/mqtt.md) — local and cloud broker parameters, topics, report examples, commands, and status fields.[15]
-- [OpenBambuAPI TLS](https://github.com/Doridian/OpenBambuAPI/blob/main/tls.md) — Bambu CA, printer-serial certificate identity, SNI, and certificate-validation pitfalls.[16]
+- [OpenBambuAPI MQTT](https://github.com/Doridian/OpenBambuAPI/blob/main/mqtt.md) — cloud broker parameters, topics, report examples, and status fields.[15]
+- [OpenBambuAPI TLS](https://github.com/Doridian/OpenBambuAPI/blob/main/tls.md) — certificate identity and certificate-validation pitfalls.[16]
 - [ha-bambulab overview](https://docs.page/greghesp/ha-bambulab) — current authorization impact on reads versus writes.[17]
-- [ha-bambulab setup](https://docs.page/greghesp/ha-bambulab/setup) — cloud, hybrid, and LAN configuration requirements.[18]
 - [ha-bambulab entities](https://docs.page/greghesp/ha-bambulab/entities) — mature telemetry surface and model-specific availability.[19]
 - [ha-bambulab device triggers](https://docs.page/greghesp/ha-bambulab/device-triggers) — print lifecycle, HMS, and separate print-error events.[20]
 
-Community sources are implementation clues, not guarantees. Pin the exact revision used for code borrowing, inspect its license, and validate behavior on sanitized A1/A1 mini fixtures.
+Community sources are implementation clues, not guarantees. `ha-bambulab` in
+particular carries no licence: read it for behaviour and never copy from it.
+See the licence table in `AGENTS.md`.
 
 ## Questions these resources answer
 
 | Question | Start here |
 | --- | --- |
 | Can monitoring work without unrestricted control? | Bambu third-party integration.[11] |
-| Which local port and transport? | Bambu ports/security.[13][14] |
-| What MQTT credentials/topics are observed? | OpenBambuAPI MQTT.[15] |
-| How should TLS identity be verified? | OpenBambuAPI TLS.[16] |
-| How should hybrid LAN + Cloud behave? | Connection modes + ha-bambulab setup.[18] |
 | What Cloud capabilities are observed? | OpenBambuAPI Cloud HTTP.[22] |
+| What MQTT credentials and topics are observed? | OpenBambuAPI MQTT.[15] |
+| How should TLS identity be verified? | OpenBambuAPI TLS.[16] |
+| How often may we connect before Bambu objects? | MQTT limitations notice.[23] |
 | Which status fields matter to users? | ha-bambulab entities.[19] |
 | Why surface both HMS and print error? | OpenBambuAPI + ha-bambulab triggers.[15][20] |
 | How does data reach TRMNL? | Private Plugins + Webhooks.[2][3] |
@@ -63,6 +68,9 @@ Community sources are implementation clues, not guarantees. Pin the exact revisi
 | How can this become shareable later? | Recipes + form builder.[9][10] |
 
 ## Sources
+
+Numbers are stable; the gaps are entries that applied only to a local-network
+transport and were dropped.
 
 [1] https://docs.usetrmnl.com/llms.txt — TRMNL API documentation index
 [2] https://help.usetrmnl.com/en/articles/9510536-private-plugins — TRMNL Private Plugins
@@ -75,14 +83,12 @@ Community sources are implementation clues, not guarantees. Pin the exact revisi
 [9] https://help.usetrmnl.com/en/articles/10122094-plugin-recipes — TRMNL Plugin Recipes
 [10] https://help.usetrmnl.com/en/articles/10513740-custom-plugin-form-builder — TRMNL Custom Plugin Form Builder
 [11] https://wiki.bambulab.com/en/software/third-party-integration — Bambu Lab Third-party Integration
-[12] https://wiki.bambulab.com/en/knowledge-sharing/enable-lan-mode — Bambu Lab LAN Mode
 [13] https://wiki.bambulab.com/en/general/bbl-security — Bambu Lab Security
-[14] https://wiki.bambulab.com/en/general/printer-network-ports — Bambu Lab Printer Network Ports
 [15] https://github.com/Doridian/OpenBambuAPI/blob/main/mqtt.md — OpenBambuAPI MQTT protocol notes
 [16] https://github.com/Doridian/OpenBambuAPI/blob/main/tls.md — OpenBambuAPI TLS certificate notes
 [17] https://docs.page/greghesp/ha-bambulab — ha-bambulab Integration Overview
-[18] https://docs.page/greghesp/ha-bambulab/setup — ha-bambulab Setup
 [19] https://docs.page/greghesp/ha-bambulab/entities — ha-bambulab Entities
 [20] https://docs.page/greghesp/ha-bambulab/device-triggers — ha-bambulab Device Triggers
 [21] https://github.com/bambulab/BambuStudio — Bambu Studio source repository
 [22] https://github.com/Doridian/OpenBambuAPI/blob/main/cloud-http.md — OpenBambuAPI Cloud HTTP protocol notes
+[23] https://forum.bambulab.com/t/bambu-lab-mqtt-limitations/83440 — Bambu Lab MQTT limitations notice

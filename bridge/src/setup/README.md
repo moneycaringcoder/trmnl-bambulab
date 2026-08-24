@@ -1,12 +1,12 @@
 # setup
 
 The `pnpm setup` CLI: interactive configuration, `doctor`, and `reauth`. The
-user-facing guide is [`docs/SETUP.md`](../../../docs/SETUP.md).
+user-facing guide is [the README](../../../README.md#self-hosting).
 
 | Module | Responsibility |
 | --- | --- |
 | `index.ts` | Argument dispatch and the single place failures are rendered. |
-| `flow.ts` | The wizard: mode, cloud, device selection, LAN, TRMNL. |
+| `flow.ts` | The wizard: sign in, pick printers, point at TRMNL. |
 | `doctor.ts` | Re-verify a saved config. Writes nothing; pushes only with `--push`. |
 | `reauth.ts` | Replace only the cloud token, in place. |
 | `cloud-session.ts` | The I/O half of cloud auth: prompts and requests, no branching logic. |
@@ -14,7 +14,6 @@ user-facing guide is [`docs/SETUP.md`](../../../docs/SETUP.md).
 | `webhook-url.ts` | TRMNL webhook URL validation. Pure. |
 | `mask.ts` | Masking for anything that reaches a terminal or a log. Pure. |
 | `store.ts` | Atomic 0600 read/write of `bridge/.env`. |
-| `lan-verify.ts` | One-shot, read-only LAN MQTT probe with TLS verification on. |
 | `webhook-push.ts` | One POST to TRMNL, with a 429 and 413 story. |
 | `synthetic.ts` | Loads the committed merged fixture used as the test payload. |
 | `prompt.ts` | Hidden prompts, choices, and validating retries. |

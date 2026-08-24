@@ -26,7 +26,7 @@ const USAGE = [
   "  pnpm setup reauth           sign in again and refresh the token",
   "  pnpm setup webhook          set the TRMNL webhook URL",
   "",
-  "Docs: docs/SETUP.md",
+  "Docs: README.md",
 ];
 
 async function main(): Promise<number> {

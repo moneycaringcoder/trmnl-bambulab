@@ -141,9 +141,9 @@ export interface Snapshot {
   schemaVersion: typeof SCHEMA_VERSION;
   connection: {
     mode: ConnectionMode;
-    local: ProviderStatus;
     cloud: ProviderStatus;
-    cloudMetadataStale: boolean;
+    /** True when the newest observation is older than the staleness window. */
+    stale: boolean;
   };
   state: PrinterState;
   /** Diagnostics only. `buildWebhookPayload` must drop this. */

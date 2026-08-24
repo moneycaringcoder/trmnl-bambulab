@@ -9,7 +9,6 @@ and numeric ranges, because those are what the tests pin.
 
 | Directory | Contents |
 | --- | --- |
-| `local/` | Sanitized A1 and A1 mini LAN MQTT reports. |
 | `cloud/` | Sanitized Bambu Cloud HTTP and cloud MQTT response shapes. |
 | `merged/` | Coordinator output used by the bridge tests and by `trmnlp` preview. |
 

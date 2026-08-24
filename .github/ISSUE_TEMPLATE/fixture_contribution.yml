@@ -22,14 +22,12 @@ body:
         `bridge/fixtures/`, do that instead. This form is for offering a
         capture when you would like a review of the sanitization first.
 
-  - type: dropdown
+  - type: input
     id: printer_model
     attributes:
       label: Printer model captured
-      options:
-        - A1
-        - A1 mini
-        - Other (state it below)
+      description: As Bambu Cloud reports it.
+      placeholder: "A1 mini"
     validations:
       required: true
 
@@ -46,7 +44,6 @@ body:
     attributes:
       label: Where the capture came from
       options:
-        - Direct LAN MQTT report
         - Bambu Cloud HTTP response
         - Bambu Cloud MQTT report
         - Merged coordinator output

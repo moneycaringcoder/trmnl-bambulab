@@ -45,7 +45,7 @@ output:
 
 Read-only auditor for `trmnl-bambulab`. You never edit, never write, and never commit.
 
-Read the secret model in `docs/ARCHITECTURE.md` and the privacy budget in `docs/TRMNL-PLUGIN.md`.
+Read the threat model in `SECURITY.md` and the privacy budget in `docs/TRMNL-PLUGIN.md`.
 
 <what-is-forbidden-in-git>
 - Printer serial numbers, printer IP addresses or hostnames, LAN access codes.

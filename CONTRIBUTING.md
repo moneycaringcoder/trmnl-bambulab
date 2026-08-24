@@ -135,15 +135,15 @@ key names, value types, state tokens, stage codes, and numeric ranges. A
 fixture that has been cleaned into a different shape is worse than no fixture,
 because it will pin the wrong contract.
 
-**Place.** Put the file under `bridge/fixtures/local/`, `bridge/fixtures/cloud/`,
-or `bridge/fixtures/merged/` according to that directory's README. Name a
+**Place.** Put the file under `bridge/fixtures/cloud/` or
+`bridge/fixtures/merged/` according to that directory's README. Name a
 hand-authored file `*.synthetic.json` so that a real hardware capture can later
 replace it deliberately rather than by accident.
 
 **Verify.** Run the scanner over the file, then read the file yourself:
 
 ```sh
-scripts/secret-scan.sh bridge/fixtures/local/your-fixture.json
+scripts/secret-scan.sh bridge/fixtures/cloud/your-fixture.json
 ```
 
 **States most wanted**, from the fixture matrix in `docs/BAMBU-PROTOCOL.md`:
@@ -153,16 +153,17 @@ valuable too, because the bridge has to merge them into accumulated state.
 
 ## Supported printers
 
-The A1 and the A1 mini are supported today. Nothing else is.
+Any printer bound to a Bambu Cloud account is listed and can be shown, because
+the endpoints the bridge reads are not model-specific. What varies by model is
+how much a printer reports: an X1 sends its whole status in every report, while
+a P1 sends only what changed.
 
-A new model may not be claimed as supported in code, in documentation, or in
-the README until sanitized fixtures for that model and tests that consume them
-are both in the repository. A pull request that adds a model name to a list
-without fixtures will be declined.
+So support is claimed per field, not per model, and only where a sanitized
+fixture and a test that consumes it are both in the repository. A pull request
+that claims a field is available on a model without a fixture will be declined.
 
-Fixtures for a currently unsupported model are welcome on their own. That is
-the first step, and it is a genuinely useful contribution even before any code
-changes.
+Fixtures for a model nobody has covered yet are welcome on their own. That is
+the first step, and a genuinely useful contribution before any code changes.
 
 ## Hard boundaries
 

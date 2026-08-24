@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Local bridge that fuses Bambu Lab LAN MQTT and Bambu Cloud telemetry into a TRMNL webhook payload.",
+  "description": "Reads Bambu Cloud and pushes a Bambu Lab printer status snapshot to a TRMNL webhook.",
   "engines": {
     "node": ">=22.18"
   },

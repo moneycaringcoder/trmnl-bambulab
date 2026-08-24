@@ -1,7 +1,7 @@
 # bambu-cloud
 
-The Bambu Cloud provider. Optional, isolated, and allowed to fail: nothing here
-may be required for direct LAN monitoring.
+The Bambu Cloud provider. This is the only data source in the product: Bambu
+Cloud or nothing.
 
 Every endpoint in this directory is reverse-engineered from OpenBambuAPI and
 ha-bambulab. Bambu publishes no general public consumer Cloud API contract, so

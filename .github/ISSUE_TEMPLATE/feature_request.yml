@@ -14,7 +14,7 @@ body:
         - **Weakening transport security.** No TLS bypass, no `insecure`
           option, no credential leaving the user's machine.
 
-        Everything else is open. Read `docs/ARCHITECTURE.md` before proposing
+        Everything else is open. Read `docs/DECISIONS.md` before proposing
         something structural.
 
   - type: textarea
@@ -47,13 +47,13 @@ body:
       required: true
 
   - type: dropdown
-    id: mode
+    id: tier
     attributes:
-      label: Which connection modes does this need
+      label: Which way of running it does this affect
       options:
-        - Works in every mode
-        - Direct LAN only
-        - Requires Bambu Cloud enrichment
+        - Both hosted and self-hosted
+        - Hosted only
+        - Self-hosted only
         - Not sure
     validations:
       required: true

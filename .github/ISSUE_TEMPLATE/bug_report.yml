@@ -5,23 +5,22 @@ body:
   - type: markdown
     attributes:
       value: |
-        **Never paste a printer serial, an IP address or hostname, a LAN access
-        code, a Bambu Cloud token, an account email, or a TRMNL webhook URL
-        into this form.** Everything here is public and permanent. Redact
-        before you paste, and keep the shape of a value rather than the value.
+        **Never paste a printer serial, a device id, a Bambu Cloud token, an
+        account email, or a TRMNL webhook URL into this form.** Everything here
+        is public and permanent. Redact before you paste, and keep the shape of
+        a value rather than the value.
 
         Found something exploitable? Do not file it here. Use the Security tab
         and read `SECURITY.md` first.
 
-  - type: dropdown
+  - type: input
     id: printer_model
     attributes:
       label: Printer model
-      description: Only the A1 and the A1 mini are supported today.
-      options:
-        - A1
-        - A1 mini
-        - Other (unsupported)
+      description: >
+        As Bambu Cloud reports it. Any printer bound to your account is listed;
+        which fields the display can show varies by model.
+      placeholder: "A1 mini"
     validations:
       required: true
 
@@ -31,17 +30,6 @@ body:
       label: Printer firmware version
       description: As shown on the printer, in Bambu Studio, or in Bambu Handy.
       placeholder: "01.04.00.00"
-    validations:
-      required: true
-
-  - type: dropdown
-    id: mode
-    attributes:
-      label: Connection mode
-      options:
-        - hybrid
-        - local (direct LAN)
-        - cloud only
     validations:
       required: true
 
@@ -83,7 +71,7 @@ body:
       label: Steps to reproduce
       description: What state was the printer in, and what did you do?
       placeholder: |
-        1. Printer idle, bridge running in hybrid mode
+        1. Printer idle, bridge running
         2. Started a print from Bambu Studio
         3. ...
     validations:

@@ -180,3 +180,56 @@ to mislead.
 A user whose printer is in LAN-only mode cannot use this plugin, because
 LAN-only mode is precisely the setting that stops the printer talking to the
 cloud. That is stated plainly in the README rather than worked around.
+
+## D11. Hosted is pulled by TRMNL; self-hosted pushes
+
+**Chosen.** The hosted tier serves a JSON endpoint that TRMNL fetches on the
+plugin's own schedule, using TRMNL's Polling strategy. The self-hosted bridge
+keeps pushing to a webhook.
+
+`docs/TRMNL-PLUGIN.md` originally ruled polling out, and its reasoning was
+sound at the time: TRMNL cannot reach a printer on someone's home network. That
+reason died with the LAN transport. Nothing about the hosted tier is on a
+private network — it is a Worker on the public internet — so TRMNL can reach it
+perfectly well.
+
+Pulling is better for the hosted tier in four ways, and the fourth is the one
+that matters:
+
+- The twelve-pushes-an-hour ceiling stops applying, because we are not pushing.
+  TRMNL fetches at the plugin's refresh interval, and the cron, the sliding-hour
+  budget and the change detection all become unnecessary on this path.
+- TRMNL already skips regenerating a screen when the merge variables have not
+  changed, so the deduplication we built is duplicated work here.
+- The endpoint can be locked to TRMNL's published server addresses.
+- **We stop holding the user's webhook URL.** That URL is a bearer credential
+  for their display: anyone with it can draw anything on their screen. Under
+  polling we never receive it, never store it, and cannot leak it. One fewer
+  credential in the database is worth more than any of the above.
+
+The push path stays exactly as it is for self-hosting, where TRMNL genuinely
+cannot reach the bridge. Both remain first-class, which is the requirement.
+
+The payload shape needs no change: TRMNL's polling reader wants merge variables
+at the root of the response, and `WebhookVariables` is already flat.
+
+## D12. Users sign in with an identity provider, not a bare key
+
+**Chosen.** The hosted sign-in goes through a hosted identity provider offering
+social and passwordless email, so the user clicks once rather than inventing
+another password.
+
+**Rejected:** making the polling key the only identity. It is tempting, because
+it removes an entire account-creation step from a product whose whole promise is
+that there is nothing to set up. But `AGENTS.md` requires hosted identity to
+come from a provider, and that rule is not mine to trade away for convenience.
+
+It is also the weaker design once the key has to live in a TRMNL form field: a
+capability that is simultaneously the credential and the account has nothing to
+fall back on when it leaks, and no way for its owner to prove they are its
+owner. The friction the rule costs is one click on a provider the user already
+has an account with.
+
+So the key stays a narrow read capability — it returns one account's display
+payload and nothing else — and the account behind it is owned by an
+authenticated identity that can rotate it, revoke it, and delete everything.

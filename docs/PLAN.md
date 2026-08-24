@@ -81,27 +81,53 @@ else's token.
 - **The TRMNL plugin.** Four views, linting clean and rendered to 1-bit PNG at
   800x480. An idle printer shows no invented numbers; a stale one says so.
 
-## Next
+## Distance to the product
 
-1. **Hosted push engine.** Neon schema with the token encrypted at rest, and a
-   Cloudflare Worker on a five-minute cron. In progress.
-2. **Hosted enrolment.** A way for an account to exist. The self-service
-   sign-in and printer-picker flow needs an identity provider provisioned in
-   the owner's Neon project, which only they can do, so the first step is an
-   operator-run enrolment path.
-3. **Record what the first real sign-in taught us**, in
-   `docs/BAMBU-PROTOCOL.md`.
+The goal is two things at once: someone who wants zero pain signs in, picks
+printers, and forgets about it; and someone who wants to self-host owes us
+nothing. Measured against that:
+
+**Self-hosting works today**, proven on a real account with two printers. What
+is left is packaging rather than capability:
+
+1. **Get the templates in without copy-paste.** `trmnlp push` does it, but it
+   needs a plugin id and an API key, so it is the owner's to run once.
+2. **Ship it as something other than a git clone.** A published package or a
+   container image, plus a service unit so it restarts.
+3. **Say something useful when the token expires.** It lasts about 90 days and
+   cannot be refreshed, so the bridge should warn well before it stops rather
+   than simply failing a request.
+
+**Hosted has an engine and no front door.** The cron, the schema, the token
+encryption and the payload are done and bundle for Cloudflare. Nothing creates
+an account. What is left, in order:
+
+1. **A screen endpoint.** `GET /v1/screen?key=…` returning the payload for one
+   account, locked to TRMNL's published addresses. Small, because the payload
+   builder already exists. See D11: TRMNL pulls, so the hosted tier needs no
+   webhook URL, no push budget and no scheduler.
+2. **Sign-in and printer picker.** The web flow: authenticate, run the Bambu
+   login the CLI already implements, list printers, choose, issue a key.
+3. **Identity.** A hosted provider with social and passwordless email, per D12.
+   Provisioning it in the owner's Neon project is theirs to do.
+4. **Revoke and delete, in the interface.** `deleteAccount` exists and cascades;
+   nothing calls it from outside.
+5. **Rate limits and abuse controls.** A launch gate in `AGENTS.md`, not an
+   afterthought.
+6. **Publish the recipe.** One click to install, one field to paste a key into.
+
+Steps 1 and 2 are the bulk of the remaining product. Steps 3 to 6 are gates
+rather than features.
 
 ## Known unknowns
 
-Each is a real risk with a stated fallback, not a worry.
+What is left is genuinely unknown. Everything the first real run settled has
+been moved into `docs/BAMBU-PROTOCOL.md`.
 
 | Unknown | If it goes wrong |
 | --- | --- |
-| Whether the login header set is still accepted | Sign-in fails outright; the header set is one small file to revise |
 | Whether the emailed-code path works for a two-factor account | The owner pastes a token exported from another client; `pnpm setup` already offers that |
-| Whether the current token is a JWT | Handled: the MQTT username falls back to the account-id endpoint |
-| Whether `/user/print` really carries `progress` | The display shows state without a percentage until MQTT is connected |
-| Whether Bambu's broker accepts our hand-written MQTT client | The bridge keeps working on HTTP alone, with no layer counts or temperatures |
-| Whether a P1 reports enough while idle without a `pushall` publish | Expected and accepted: idle needs no telemetry, and D1 forbids the publish |
+| Whether `/user/print` ever carries `progress`, for a cloud-started print | Nothing: MQTT supplies progress, and the hosted tier shows state without a percentage |
+| Whether TRMNL's polling reader accepts our payload unchanged | The shape is already flat, which is what it wants; worst case is a thin adapter |
+| Whether a hosted account can be enrolled without the user pasting anything | Probably not: they must carry one key from us to TRMNL. One paste is the floor |
 | Whether the hosted tier will ever need MQTT | D2 made the client transport-agnostic, so it is an addition rather than a rewrite |

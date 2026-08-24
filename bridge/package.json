@@ -8,6 +8,7 @@
     "node": ">=22.18"
   },
   "scripts": {
+    "start": "node src/index.ts",
     "setup": "node src/setup/index.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

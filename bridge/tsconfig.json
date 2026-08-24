@@ -1,7 +1,9 @@
 {
   "compilerOptions": {
-    "target": "ES2023",
-    "lib": ["ES2023"],
+    // ES2024 for `Promise.withResolvers`, which Node 22 has and which lets the
+    // shutdown and sleep paths read as straight-line code.
+    "target": "ES2024",
+    "lib": ["ES2024"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "rootDir": "src",

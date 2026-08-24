@@ -9,9 +9,21 @@ describe("loadSyntheticPayload", () => {
     const payload = loadSyntheticPayload();
     expect(Object.keys(payload.body)).toEqual(["merge_variables"]);
     expect(payload.body.merge_variables).toMatchObject({
-      schema_version: 1,
-      connection: { mode: "cloud" },
-      job: { state: "printing" },
+      v: 1,
+      updated_at: "2026-01-01T00:00Z",
+      hidden: 0,
+      cloud: "connected",
+      printers: [
+        { state: "printing", name: "Demo Printer One", progress: 42 },
+        {
+          state: "idle",
+          name: "Demo Printer Two",
+          progress: null,
+          layer: null,
+          layers: null,
+          remaining: null,
+        },
+      ],
     });
   });
 

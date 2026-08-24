@@ -1,50 +1,48 @@
 {
-  "schema_version": 1,
-  "connection": {
-    "mode": "cloud",
-    "cloud": "connected",
-    "stale": false
-  },
-  "printer": {
-    "name": "Setup check",
-    "model": "A1",
-    "online": true,
-    "stale": false
-  },
-  "job": {
-    "state": "printing",
-    "raw_state": "RUNNING",
-    "name": "Synthetic setup payload",
-    "progress": 42,
-    "remaining_minutes": 76,
-    "stage": "Printing",
-    "stage_code": "2",
-    "layer": {
-      "current": 81,
-      "total": 194
+  "v": 1,
+  "updated_at": "2026-01-01T00:00Z",
+  "printers": [
+    {
+      "state": "printing",
+      "raw_state": "SYNTHETIC_RUNNING",
+      "name": "Demo Printer One",
+      "model": "Demo Model A",
+      "online": true,
+      "stale": false,
+      "progress": 42,
+      "layer": 81,
+      "layers": 194,
+      "remaining": "1h 16m",
+      "stage": "Synthetic printing check",
+      "nozzle": 220,
+      "nozzle_target": 220,
+      "bed": 60,
+      "bed_target": 60,
+      "material": "Demo PLA",
+      "job": null,
+      "alert": null
+    },
+    {
+      "state": "idle",
+      "raw_state": "SYNTHETIC_IDLE",
+      "name": "Demo Printer Two",
+      "model": "Demo Model B",
+      "online": true,
+      "stale": false,
+      "progress": null,
+      "layer": null,
+      "layers": null,
+      "remaining": null,
+      "stage": null,
+      "nozzle": 24,
+      "nozzle_target": null,
+      "bed": 23,
+      "bed_target": null,
+      "material": null,
+      "job": null,
+      "alert": null
     }
-  },
-  "temperatures": {
-    "nozzle": 220,
-    "nozzle_target": 220,
-    "bed": 60,
-    "bed_target": 60
-  },
-  "material": {
-    "source": "AMS Lite 1",
-    "type": "PLA",
-    "color": "#E5E5E5"
-  },
-  "project": {
-    "cover_url": null,
-    "weight_grams": null,
-    "length_mm": null,
-    "bed_type": null
-  },
-  "alerts": {
-    "active": false,
-    "hms": [],
-    "print_error": null
-  },
-  "updated_at": "2026-01-01T00:00:00Z"
+  ],
+  "hidden": 0,
+  "cloud": "connected"
 }

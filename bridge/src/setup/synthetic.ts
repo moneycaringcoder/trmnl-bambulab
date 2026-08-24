@@ -10,6 +10,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import type { WebhookPayload, WebhookVariables } from "../types.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -24,14 +25,16 @@ export const SYNTHETIC_FIXTURE = path.resolve(
 
 export interface SyntheticPayload {
   /** Exactly what TRMNL receives. */
-  body: { merge_variables: unknown };
+  body: WebhookPayload;
   serialized: string;
   bytes: number;
 }
 
 export function loadSyntheticPayload(): SyntheticPayload {
-  const mergeVariables: unknown = JSON.parse(readFileSync(SYNTHETIC_FIXTURE, "utf8"));
-  const body = { merge_variables: mergeVariables };
+  const mergeVariables = JSON.parse(
+    readFileSync(SYNTHETIC_FIXTURE, "utf8"),
+  ) as WebhookVariables;
+  const body: WebhookPayload = { merge_variables: mergeVariables };
   const serialized = JSON.stringify(body);
   return { body, serialized, bytes: Buffer.byteLength(serialized, "utf8") };
 }

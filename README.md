@@ -1,39 +1,80 @@
 # trmnl-bambulab
 
-A TRMNL plugin that shows useful Bambu Lab printer status on an e-paper display.
+See your Bambu Lab printers on a TRMNL e-paper display.
 
-Status: research and architecture scaffold. No printer credentials, TRMNL tokens, production endpoints, or device data are committed.
+Sign in with your Bambu account, pick which printers to show, and the display
+tells you what they are doing. Idle printers show their name. Printing printers
+show progress, layer, time remaining, and temperatures.
 
-## Chosen direction
+Bambu Cloud only. Read only — this never sends a command to a printer.
 
-Build the best available hybrid integration. A provider coordinator combines direct printer Wi-Fi/LAN MQTT with optional Bambu Cloud HTTP/MQTT. Local data wins for fresh realtime telemetry; cloud adds remote fallback, device discovery, print history, project metadata, and cover art. A compact normalized snapshot is pushed to a TRMNL Private Plugin webhook and rendered through Liquid templates.
+Status: in development. Nothing here has been verified against a real Bambu
+account yet.
 
-Bambu documents local MQTT status pushes as unaffected by its newer command authorization mechanism, while printer control operations have additional restrictions.[11] Bambu Cloud has no general supported public consumer API contract, so the cloud provider remains isolated, optional, and capable of failing without breaking direct LAN operation.[18][22]
+## Two ways to run it
 
-## Initial scope
+**Hosted.** Sign in, pick printers, done. You install nothing. Runs on
+Cloudflare and Neon.
 
-- A1 and A1 mini first.
-- Hybrid mode recommended; direct-LAN and cloud-only modes supported.
-- Current job, progress, remaining time, layer, stage, temperatures, filament, connectivity, and errors.
-- Cloud enrichment for printer discovery, history/project metadata, weight/length/bed data, and optional cover image.
-- Multi-printer discovery and a clean path to fleet views.
-- No pause, resume, stop, temperature, motion, filament, or print-start controls through TRMNL.
+**Self-hosted.** Run the bridge yourself. Our backend is never involved and
+nothing leaves your machine except the push to your own TRMNL plugin.
 
-## Documentation
+## Self-hosting
 
-Read in this order:
+```sh
+git config core.hooksPath .githooks   # enable the secret gate
+cd bridge && pnpm install
+pnpm setup
+```
 
-1. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — hybrid topology and trade-offs.
-2. [`docs/CONNECTION-MODES.md`](docs/CONNECTION-MODES.md) — direct LAN, cloud, hybrid, provider merge, and failure behavior.
-3. [`docs/BAMBU-PROTOCOL.md`](docs/BAMBU-PROTOCOL.md) — local MQTT transport and telemetry mapping.
-4. [`docs/TRMNL-PLUGIN.md`](docs/TRMNL-PLUGIN.md) — webhook contract, Liquid views, and local preview workflow.
-5. [`docs/DEVELOPMENT-PLAN.md`](docs/DEVELOPMENT-PLAN.md) — implementation sequence and acceptance gates.
-6. [`docs/RESOURCES.md`](docs/RESOURCES.md) — source hierarchy and useful links.
+`pnpm setup` signs you in, lists the printers on your account, and asks which
+ones to show. You can finish without a TRMNL webhook URL and add it later with
+`pnpm setup webhook`.
 
-Future coding agents must also read [`AGENTS.md`](AGENTS.md).
+| Command | Does |
+| --- | --- |
+| `pnpm setup` | Configure from scratch |
+| `pnpm setup doctor` | Check the saved configuration, change nothing |
+| `pnpm setup reauth` | Sign in again when the token expires |
+| `pnpm setup webhook` | Set the TRMNL webhook URL |
 
-## Sources
+Your Bambu password and any verification code are used for a single request and
+are never written to disk. Only the resulting access token is stored, in
+`bridge/.env` at mode 0600.
 
-[11] https://wiki.bambulab.com/en/software/third-party-integration — Bambu Lab Third-party Integration
-[18] https://docs.page/greghesp/ha-bambulab/setup — ha-bambulab Setup
-[22] https://github.com/Doridian/OpenBambuAPI/blob/main/cloud-http.md — OpenBambuAPI Cloud HTTP protocol notes
+Bambu tokens last around three months and their refresh endpoint no longer
+works, so expect to sign in again roughly twice a year.
+
+## What it will not do
+
+- Control your printer. Not a design gap; a deliberate boundary.
+- Work over your local network. There is no LAN mode.
+- Show a live camera feed.
+- Work if your printer is in LAN-only mode, because that turns the cloud off.
+
+## Layout
+
+| Path | Contents |
+| --- | --- |
+| `bridge/` | The TypeScript bridge: Bambu Cloud provider and the setup CLI |
+| `plugin/` | TRMNL Private Plugin settings and Liquid templates |
+| `docs/` | Setup guide, TRMNL contract, sources |
+| `scripts/` | Secret scanner |
+| `.omp/` | Agent charter and the project's review agent |
+
+## Contributing
+
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md). The one rule that matters most: no
+printer serial, device id, account email, token, or webhook URL ever enters this
+repository. A pre-commit hook enforces it.
+
+Agents working in this repository must read [`AGENTS.md`](AGENTS.md) and
+[`.omp/CHARTER.md`](.omp/CHARTER.md).
+
+## Licence
+
+MIT. See [`LICENSE`](LICENSE).
+
+Bambu Lab publishes no supported public cloud API. Everything here is
+reverse-engineered from community work and can break without notice. This
+project is not affiliated with Bambu Lab or TRMNL.

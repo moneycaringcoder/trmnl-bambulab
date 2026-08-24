@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/moneycaringcoder/trmnl-bambulab/security/advisories/new # secret-scan-allow: this repository's own public advisory page
+    about: Private disclosure through GitHub security advisories. Never file an exploitable issue publicly.
+  - name: Read the documentation first
+    url: https://github.com/moneycaringcoder/trmnl-bambulab/tree/main/docs # secret-scan-allow: this repository's own public docs URL
+    about: Architecture, connection modes, protocol notes, and the TRMNL plugin contract.

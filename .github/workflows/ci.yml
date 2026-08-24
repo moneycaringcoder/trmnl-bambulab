@@ -1,0 +1,69 @@
+name: ci
+
+# This workflow needs no repository secret and must never be given one.
+# Nothing it runs may print a printer identifier or a credential.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege. Read the code, write nothing.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Scan the whole tree
+        run: bash scripts/secret-scan.sh --tree
+
+  bridge:
+    name: bridge (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # Pinned exactly: the committed lockfile is produced by this line of pnpm.
+      - name: Install pnpm
+        run: npm install --global pnpm@11.13.1
+        working-directory: .
+
+      # --ignore-scripts keeps dependency lifecycle scripts out of CI. Nothing
+      # in this tree needs them; vitest and tsc run without them.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test

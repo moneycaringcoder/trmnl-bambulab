@@ -1,0 +1,110 @@
+name: Bug report
+description: Something the bridge or the plugin does wrong.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste a printer serial, an IP address or hostname, a LAN access
+        code, a Bambu Cloud token, an account email, or a TRMNL webhook URL
+        into this form.** Everything here is public and permanent. Redact
+        before you paste, and keep the shape of a value rather than the value.
+
+        Found something exploitable? Do not file it here. Use the Security tab
+        and read `SECURITY.md` first.
+
+  - type: dropdown
+    id: printer_model
+    attributes:
+      label: Printer model
+      description: Only the A1 and the A1 mini are supported today.
+      options:
+        - A1
+        - A1 mini
+        - Other (unsupported)
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Printer firmware version
+      description: As shown on the printer, in Bambu Studio, or in Bambu Handy.
+      placeholder: "01.04.00.00"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Connection mode
+      options:
+        - hybrid
+        - local (direct LAN)
+        - cloud only
+    validations:
+      required: true
+
+  - type: input
+    id: bridge_version
+    attributes:
+      label: Bridge version
+      description: Release tag, or the short commit hash you are running.
+      placeholder: "v0.1.0 or 1a2b3c4"
+    validations:
+      required: true
+
+  - type: input
+    id: runtime
+    attributes:
+      label: Node version and operating system
+      placeholder: "node 22.x on Debian 12"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: Include the rendered result if the problem is visible on the display.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What state was the printer in, and what did you do?
+      placeholder: |
+        1. Printer idle, bridge running in hybrid mode
+        2. Started a print from Bambu Studio
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs or payload
+      description: >
+        Bridge output or the normalized payload, with every identifier
+        replaced. The bridge is designed not to log identifiers; if you find
+        one in its output, that is itself the bug and worth saying so.
+      render: text
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before you submit
+      options:
+        - label: I removed every serial, address, access code, token, account email, and webhook URL from this report.
+          required: true
+        - label: I searched existing issues for the same problem.
+          required: true

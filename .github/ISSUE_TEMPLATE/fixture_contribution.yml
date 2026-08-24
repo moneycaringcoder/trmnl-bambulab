@@ -1,0 +1,105 @@
+name: Sanitized fixture contribution
+description: Offer a scrubbed capture from real hardware. The most useful contribution to this project.
+labels: [fixture]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        No protocol claim in this project is trusted without a fixture, so this
+        is the contribution that unblocks the most work.
+
+        Read the "Contributing a fixture" section of `CONTRIBUTING.md` and
+        `bridge/fixtures/README.md` before you attach anything.
+
+        **A fixture must contain no serial, no IP address or hostname, no
+        access code, no account identifier, no token, no task or project id, no
+        cover or asset URL, no real file or model name, no Wi-Fi network name,
+        and no real timestamp.** Sanitization must not change the shape:
+        preserve key names, value types, state tokens, stage codes, and numeric
+        ranges, because those are exactly what the tests pin.
+
+        If you would rather open a pull request with the file already in
+        `bridge/fixtures/`, do that instead. This form is for offering a
+        capture when you would like a review of the sanitization first.
+
+  - type: dropdown
+    id: printer_model
+    attributes:
+      label: Printer model captured
+      options:
+        - A1
+        - A1 mini
+        - Other (state it below)
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Printer firmware version
+      placeholder: "01.04.00.00"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: source
+    attributes:
+      label: Where the capture came from
+      options:
+        - Direct LAN MQTT report
+        - Bambu Cloud HTTP response
+        - Bambu Cloud MQTT report
+        - Merged coordinator output
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: states
+    attributes:
+      label: Printer states covered
+      description: Tick every state this capture demonstrates.
+      options:
+        - label: idle
+        - label: preparing
+        - label: printing
+        - label: paused
+        - label: finished
+        - label: failed
+        - label: offline or disconnected
+        - label: HMS alert present
+        - label: print error present with no HMS entry
+        - label: partial report mid-print
+
+  - type: textarea
+    id: method
+    attributes:
+      label: How you captured and sanitized it
+      description: >
+        Which tool subscribed or requested, and how you replaced each
+        identifier. Say whether the replacement values are stable across the
+        file, since tests may rely on that.
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything surprising in the data
+      description: >
+        Unexpected field names, units that disagree with `docs/BAMBU-PROTOCOL.md`,
+        values that appear only on this firmware, fields that vanish between
+        reports.
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before you submit
+      options:
+        - label: Every identifier listed above is removed or replaced with an obviously synthetic placeholder.
+          required: true
+        - label: Object shape, key names, value types, state tokens, stage codes, and numeric ranges are unchanged.
+          required: true
+        - label: I ran the secret scanner over the file and read it myself afterwards.
+          required: true
+        - label: I understand this file becomes public and permanent.
+          required: true

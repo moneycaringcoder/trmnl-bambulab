@@ -1,0 +1,16 @@
+# trmnlp local preview configuration example.
+#
+# Copy to plugin/.trmnlp.yml, which is git-ignored. The real file may contain
+# an API key and must never be committed.
+#
+# Run the preview with the official image:
+#   docker run --rm -p 4567:4567 -v "$PWD/plugin:/plugin" trmnl/trmnlp serve
+
+---
+# Preview data comes from a sanitized merged fixture, never from live telemetry.
+variables:
+  # Load with: trmnlp serve, then swap the fixture path to preview another state.
+  merge_variables_file: ../bridge/fixtures/merged/printing.synthetic.json
+
+# Fill in locally only if you push builds from the CLI.
+# api_key: ""

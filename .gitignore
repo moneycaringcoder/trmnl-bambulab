@@ -30,3 +30,11 @@ raw-telemetry/
 .DS_Store
 .vscode/
 .idea/
+
+# Bridge spikes are disposable and may hold real credentials.
+bridge/spikes/*
+!bridge/spikes/README.md
+
+# Local dependency and build output
+bridge/dist/
+plugin/_build/

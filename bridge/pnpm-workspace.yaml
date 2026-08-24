@@ -1,0 +1,8 @@
+# esbuild ships a postinstall script that downloads and installs a native
+# binary. vitest depends on it. Allowing that build keeps `pnpm test` working
+# on a normal developer machine.
+#
+# CI installs with --ignore-scripts, so no dependency lifecycle script runs
+# there regardless of this setting.
+allowBuilds:
+  esbuild: true

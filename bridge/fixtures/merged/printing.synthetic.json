@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "connection": {
+    "mode": "cloud",
+    "cloud": "connected",
+    "stale": false
+  },
+  "printer": {
+    "name": "Setup check",
+    "model": "A1",
+    "online": true,
+    "stale": false
+  },
+  "job": {
+    "state": "printing",
+    "raw_state": "RUNNING",
+    "name": "Synthetic setup payload",
+    "progress": 42,
+    "remaining_minutes": 76,
+    "stage": "Printing",
+    "stage_code": "2",
+    "layer": {
+      "current": 81,
+      "total": 194
+    }
+  },
+  "temperatures": {
+    "nozzle": 220,
+    "nozzle_target": 220,
+    "bed": 60,
+    "bed_target": 60
+  },
+  "material": {
+    "source": "AMS Lite 1",
+    "type": "PLA",
+    "color": "#E5E5E5"
+  },
+  "project": {
+    "cover_url": null,
+    "weight_grams": null,
+    "length_mm": null,
+    "bed_type": null
+  },
+  "alerts": {
+    "active": false,
+    "hms": [],
+    "print_error": null
+  },
+  "updated_at": "2026-01-01T00:00:00Z"
+}

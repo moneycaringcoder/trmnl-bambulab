@@ -1,0 +1,73 @@
+name: Feature request
+description: Propose a change to what the bridge shows or how it behaves.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two things are settled and not up for a feature request:
+
+        - **Printer control.** No pause, resume, stop, motion, temperature,
+          filament, or print-start path will be exposed through TRMNL. This is
+          a monitoring project, and a slow-refresh e-paper display is the wrong
+          feedback channel for a machine that melts plastic.
+        - **Weakening transport security.** No TLS bypass, no `insecure`
+          option, no credential leaving the user's machine.
+
+        Everything else is open. Read `docs/ARCHITECTURE.md` before proposing
+        something structural.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What is missing or awkward today? Describe the situation, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like instead
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the project
+      options:
+        - Bridge (providers, coordinator, normalization)
+        - Payload and normalized schema
+        - TRMNL templates and rendering
+        - Configuration and setup
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Which connection modes does this need
+      options:
+        - Works in every mode
+        - Direct LAN only
+        - Requires Bambu Cloud enrichment
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: display
+    attributes:
+      label: How it should look on a 1-bit display
+      description: >
+        Output is black and white with no fine contrast, and four viewport
+        sizes have to carry it. If the idea adds something visible, say how it
+        degrades in the quadrant layout.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# trmnl-bambulab pre-commit gate.
+#
+# Enable with:  git config core.hooksPath .githooks
+#
+# Bypassing this hook with --no-verify defeats the only automatic protection
+# against committing printer identifiers and cloud credentials. Do not do it.
+
+set -uo pipefail
+
+repo_root=$(git rev-parse --show-toplevel) || exit 1
+scan="$repo_root/scripts/secret-scan.sh"
+
+if [ ! -x "$scan" ]; then
+  echo "pre-commit: scripts/secret-scan.sh is missing or not executable" >&2
+  exit 1
+fi
+
+echo "pre-commit: scanning staged changes for secrets and printer identifiers"
+"$scan" --staged || exit 1

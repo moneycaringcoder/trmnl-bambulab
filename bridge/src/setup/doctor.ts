@@ -70,16 +70,12 @@ async function checkCloud(config: BridgeConfig): Promise<number> {
     );
     return 1;
   }
-  if (state.kind === "malformed") {
-    bad("The stored token is not a readable access token.");
-    advise("Nothing was changed.", "Run `pnpm setup reauth` to store a fresh one.");
-    return 1;
-  }
   if (state.kind === "expiring-soon") {
     warn(`The token expires on ${new Date(state.expiresAt).toISOString().slice(0, 10)}.`);
   }
   if (state.kind === "unknown-expiry") {
-    warn("The token carries no expiry claim, so expiry will only surface as a refused request.");
+    // Routine, not a fault: an opaque token carries no claims to read.
+    warn("The token has no readable expiry, so expiry will only surface as a refused request.");
   }
 
   const hosts = hostsFor(config.cloud.region);

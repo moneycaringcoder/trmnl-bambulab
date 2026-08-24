@@ -75,8 +75,20 @@ describe("validateConfig — shape", () => {
 });
 
 describe("validateConfig — cloud fields", () => {
-  it("rejects a token that is not in three-segment form", () => {
-    const problems = reject({ cloud: cloud({ accessToken: "not-a-token" }), trmnl: trmnl() });
+  // An opaque token is a token. Guessing at the format and refusing one the
+  // cloud just issued would be worse than not checking. See docs/DECISIONS.md D9.
+  it("accepts an opaque token that is not JWT-shaped", () => {
+    const config = accept({ cloud: cloud({ accessToken: "an-opaque-token" }), trmnl: trmnl() });
+    expect(config.cloud.accessToken).toBe("an-opaque-token");
+  });
+
+  it("rejects a token containing whitespace, which only ever means a bad paste", () => {
+    const problems = reject({ cloud: cloud({ accessToken: "two words" }), trmnl: trmnl() });
+    expect(problems[0]?.path).toBe("cloud.accessToken");
+  });
+
+  it("rejects an empty token", () => {
+    const problems = reject({ cloud: cloud({ accessToken: "" }), trmnl: trmnl() });
     expect(problems[0]?.path).toBe("cloud.accessToken");
   });
 
@@ -264,6 +276,13 @@ describe("patchEnv", () => {
 
   it("leaves a commented-out key alone", () => {
     expect(patchEnv("# A=1\n", { A: "2" })).toContain("# A=1");
+  });
+
+  // `reauth` patches a freshly issued token in without re-running the schema,
+  // so a mangled value must fail loudly rather than become an extra line.
+  it("refuses a value containing a line break", () => {
+    expect(() => patchEnv("A=1\n", { A: "one\ntwo" })).toThrow(/line break/);
+    expect(() => patchEnv("A=1\n", { A: "one\r\ntwo" })).toThrow(/line break/);
   });
 });
 

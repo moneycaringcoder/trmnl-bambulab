@@ -16,7 +16,6 @@
  */
 
 import { z } from "zod";
-import { looksLikeAccessToken } from "../providers/bambu-cloud/token.ts";
 import type { Region } from "../providers/bambu-cloud/hosts.ts";
 import { maskEmail, maskIdentifier, maskSecret, maskWebhookUrl } from "./mask.ts";
 import { validateWebhookUrl } from "./webhook-url.ts";
@@ -29,11 +28,17 @@ export const DEFAULT_MAX_PAYLOAD_BYTES = 2048;
 
 export const cloudSchema = z.object({
   region: z.enum(REGION_IDS),
+  /**
+   * Opaque. There is no format check, because a token the cloud just issued
+   * must never be refused by a guess about its shape. See `docs/DECISIONS.md`
+   * D9. A whitespace check stays, because internal whitespace only ever means
+   * a mangled copy-paste or a broken `.env` line.
+   */
   accessToken: z
     .string()
     .trim()
     .min(1)
-    .refine(looksLikeAccessToken, { message: "not a three-segment access token" }),
+    .refine((value) => !/\s/.test(value), { message: "contains whitespace" }),
   /**
    * A masked email, never the raw one. It exists only so `reauth` can say whose
    * account it is about to refresh.
@@ -167,8 +172,20 @@ export function parseEnv(text: string): Record<string, string> {
  * Rewrites only the given keys, in place, keeping every other line, comment,
  * and ordering decision in the file. `reauth` and `webhook` use this so
  * changing one thing cannot disturb the rest of a working configuration.
+ *
+ * A `KEY=VALUE` file cannot represent a value containing a newline, so one is
+ * refused rather than silently written as an extra line. This matters because
+ * `reauth` patches a freshly issued access token straight in, without going
+ * back through the schema, and a mangled token must corrupt nothing but its
+ * own error message.
  */
 export function patchEnv(text: string, patch: Record<string, string>): string {
+  for (const [key, value] of Object.entries(patch)) {
+    if (/[\r\n]/.test(value)) {
+      throw new Error(`refusing to write ${key}: the value contains a line break`);
+    }
+  }
+
   const remaining = new Map(Object.entries(patch));
   const lines = text.split("\n");
   const patched = lines.map((line) => {

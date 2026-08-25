@@ -59,51 +59,57 @@ jobs run. Job names are worse: they frequently contain a private or
 pre-release model name. That is why the bridge exports a job name only when
 `TRMNL_EXPORT_JOB_NAME` is turned on, and why the default is off.
 
-### A leaked hosted screen key
+### A leaked TRMNL installation token
 
-The screen key is a read capability and nothing more: it returns one account's
-rendered display payload. It cannot change a selection, cannot reach a printer,
-cannot read a Bambu token, and cannot be exchanged for anything else. A holder
-sees what that person's display shows.
+TRMNL mints one access token per installation during the install handshake and
+presents it on every request it makes for that user. A holder of one can, for
+that installation only: read the rendered display payload through the markup
+route, overwrite the recorded user uuid through the success webhook, and delete
+the installation and its account through the uninstall webhook. It cannot
+change which printers are shown, cannot reach a printer, and cannot read a
+Bambu token.
 
 It is a bearer credential in an `Authorization` header rather than a URL, so it
 is not recorded by intermediary access logs, and the Worker's own per-request
-logging is off. Only a SHA-256 fingerprint is stored, so a database leak yields
-no working keys. The owner rotates it from the account page, and the previous
-key stops resolving immediately.
+logging is off. Only a keyed HMAC tag of it is stored, so a database leak
+yields no working tokens. We never hand the token to a browser; it exists in
+TRMNL's systems and, transiently, in the Worker's memory during a request.
+Rotating it is TRMNL's to do — uninstalling and reinstalling the plugin
+retires the old token's row and mints a fresh one.
 
-### A compromised hosted session
+### A leaked management token
 
-The hosted tier's enrolment surface trusts a short-lived Ed25519 token from the
-identity provider. A holder of a live token can, for that account only: change
-which printers are shown, rotate the screen key, and delete the account. They
-cannot read the Bambu token, and they cannot see the current screen key, because
-it is not stored.
+The setup page authenticates with a short-lived token the install redirect
+delivers in the URL fragment — the fragment, not the query, so no request log
+anywhere records it, and the page strips it from the address bar on load. It is
+HMAC-signed by the Worker's own keyring, expires after an hour, and its holder
+can, for that installation only: run the Bambu sign-in, change which printers
+are shown, and delete the account. They cannot read the Bambu token, and they
+cannot obtain the TRMNL access token, which never reaches a browser.
 
-They can also cause Bambu to email a sign-in code to an address of their
+A holder can also cause Bambu to email a sign-in code to an address of their
 choosing. `ENROL_LIMITER` bounds that at ten a minute *per Cloudflare
 location*, which is the honest figure: Cloudflare documents its rate-limit
 binding as per-location, eventually consistent, and explicitly not an
 accounting system, so the global ceiling is a multiple of ten rather than ten.
-It is a cost and nuisance guard, not a quota. It fails *closed*, unlike the
-limiters on the screen endpoint: a limiter fault stops new enrolment rather
-than removing the only bound on sending mail to other people.
+It is a cost and nuisance guard, not a quota. It fails *closed*: a limiter
+fault stops new enrolment rather than removing the only bound on sending mail
+to other people.
 
-The token is verified locally against the provider's published key set. The
-algorithm is pinned rather than read from the token, the issuer and audience are
-derived from one configured origin, and an absent expiry is refused rather than
-treated as eternal. Tokens live fifteen minutes, so the practical mitigation for
-a compromised session is the provider's own sign-out; there is no session state
-here to revoke, by design.
+There is no session state to revoke, by design: expiry is the revocation, and a
+fresh token requires re-running TRMNL's install handshake, which only someone
+holding the TRMNL account can do.
 
 ### What the hosted database reveals if it leaks
 
 Assume the rows without the key that seals the tokens — a key which now exists
 in two places rather than one, since the collector holds a copy of it, so this
 section's premise is only as strong as that machine. From `accounts`, an
-attacker gets: encrypted Bambu tokens they cannot open, screen-key fingerprints
-they cannot reverse, the printer serials each account chose, a region, and a
-keyed tag identifying each owner.
+attacker gets: encrypted Bambu tokens they cannot open, the printer serials
+each account chose, a region, and a keyed tag identifying each owner. From
+`trmnl_installations`: keyed HMAC tags of TRMNL's access tokens, which they
+cannot reverse into a working token, and TRMNL's per-installation uuids, which
+authenticate nothing on their own.
 
 From `screens` they get something more sensitive, and it is worth naming rather
 than leaving implied: that table holds the exact JSON last served to TRMNL, so it
@@ -115,11 +121,11 @@ jobs run — for every account at once rather than one. A leak of this table is 
 privacy incident even though it contains no credential.
 
 The serials are the other real exposure, and they are stored because the cron
-needs them to poll. The owner tag is an HMAC under a key held in Worker secrets rather
-than a plain hash, specifically so that a leak of the database alone cannot be
-turned into a list of which people hold accounts here — the identity provider
-does not document the entropy of the subject it issues, and a bare digest of a
-guessable identifier is reversible by dictionary attack.
+needs them to poll. The owner tag and the token tag are HMACs under a key held
+in Worker secrets rather than plain hashes, so a leak of the database alone
+cannot be joined against anything: our installation ids are random, but the
+HMAC costs nothing and removes the need to reason about the entropy of every
+input for as long as the schema lives.
 
 No email address, no password, no verification code, and no plaintext token is
 stored anywhere. A password is never received in the first place: the hosted

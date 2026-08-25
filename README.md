@@ -14,16 +14,18 @@ but **nothing here has been verified against a real Bambu account yet**. See
 
 ## Two ways to run it
 
-**Hosted.** Sign in, pick printers, done. You install nothing. Runs on
-Cloudflare and Neon.
+**Hosted.** Install the TRMNL plugin, sign in to Bambu with an emailed code,
+pick printers, done. You install nothing, create no account, and never handle a
+credential. Runs on Cloudflare and Neon.
 
 The two tiers do not show the same amount, and the difference is not a bug to be
 fixed later. Bambu's HTTP interface carries no progress, no layer count, no time
-remaining and no temperature; those arrive over MQTT, which the bridge subscribes
-to and the hosted Worker does not. So a printing printer reads as **Printing and
-its name** on the hosted tier, and as a percentage with a progress rail, remaining
-time, layer, temperatures and filament on the self-hosted one. Run the bridge if
-you want the numbers.
+remaining and no temperature; those arrive over MQTT, which wants a connection
+held open. The self-hosted bridge holds one, and the hosted tier holds one only
+while its collector is running — so a printing printer reads as **Printing and
+its name** on the plain hosted tier, and as a percentage with a progress rail,
+remaining time, layer and temperatures when the collector is up or when you run
+the bridge yourself.
 
 **Self-hosted.** Run the bridge yourself. Our backend is never involved and
 nothing leaves your machine except the push to your own TRMNL plugin.

@@ -64,6 +64,22 @@ export interface RunOptions {
   until?: Promise<void>;
 }
 
+export interface RunDependencies {
+  pollCloud: typeof pollCloudHttp;
+  push: typeof pushPayload;
+  openMqttStream: typeof openTlsStream;
+  watchMqtt: typeof watchCloudMqtt;
+  now(): number;
+}
+
+const SYSTEM_DEPENDENCIES: RunDependencies = {
+  pollCloud: pollCloudHttp,
+  push: pushPayload,
+  openMqttStream: openTlsStream,
+  watchMqtt: watchCloudMqtt,
+  now: Date.now,
+};
+
 /**
  * Resolves the MQTT username.
  *
@@ -91,7 +107,10 @@ async function resolveMqttUsername(
   }
 }
 
-export async function runBridge(options: RunOptions): Promise<void> {
+export async function runBridge(
+  options: RunOptions,
+  dependencies: RunDependencies = SYSTEM_DEPENDENCIES,
+): Promise<void> {
   const { config } = options;
   const logger = options.logger ?? createLogger(config.logLevel);
   const hosts = hostsFor(config.cloud.region);
@@ -107,7 +126,8 @@ export async function runBridge(options: RunOptions): Promise<void> {
   let coordinator: CoordinatorState = emptyCoordinatorState();
   let scheduler: SchedulerState = emptySchedulerState();
   let cloudStatus: ProviderStatus = "connecting";
-  let stopped = false;
+  const stopping = new AbortController();
+  void options.until?.then(() => stopping.abort());
 
   const observe = (observation: Observation): void => {
     coordinator = accept(coordinator, observation);
@@ -136,81 +156,88 @@ export async function runBridge(options: RunOptions): Promise<void> {
           username,
           logger,
           observe,
-          shouldStop: () => stopped,
+          stopping: stopping.signal,
+          dependencies,
         });
 
   const pushing = (async () => {
-    for (;;) {
-      const now = Date.now();
+    try {
+      while (!stopping.signal.aborted) {
+        const now = dependencies.now();
 
-      const poll = await pollCloudHttp({
-        hosts,
-        accessToken: config.cloud.accessToken,
-        deviceIds: config.cloud.deviceIds,
-        exportJobName: config.trmnl.exportJobName,
-        now,
-      });
-      for (const observation of poll.observations) observe(observation);
-      cloudStatus = poll.status;
-
-      const health = healthFrom(poll, now);
-      if (poll.status === "reauth_required") {
-        logger.error("Bambu Cloud refused the stored token", {
-          fix: "run `pnpm setup reauth` to sign in again",
+        const poll = await dependencies.pollCloud({
+          hosts,
+          accessToken: config.cloud.accessToken,
+          deviceIds: config.cloud.deviceIds,
+          exportJobName: config.trmnl.exportJobName,
+          now,
         });
-      } else if (health.lastErrorCategory !== null) {
-        logger.warn("a cloud read failed", { category: health.lastErrorCategory });
-      }
+        if (stopping.signal.aborted) break;
+        for (const observation of poll.observations) observe(observation);
+        cloudStatus = poll.status;
 
-      const snapshots = snapshotsFor(coordinator, config.cloud.deviceIds, now);
-      const payload = buildWebhookPayload(snapshots, {
-        now,
-        cloud: cloudStatus,
-        maxBytes: config.trmnl.maxPayloadBytes,
-        exportJobName: config.trmnl.exportJobName,
-      });
-      if (payload.shed.length > 0) {
-        logger.debug("shed optional detail to fit the payload ceiling", {
-          given_up: payload.shed.join(","),
-          bytes: payload.bytes,
-        });
-      }
-
-      const decision = decide(scheduler, payload, {
-        now,
-        maxPushesPerHour: config.trmnl.maxPushesPerHour,
-        maxPayloadBytes: config.trmnl.maxPayloadBytes,
-      });
-
-      if (decision.kind === "push") {
-        const result = await pushPayload(webhookUrl, payload.body);
-        if (result.ok) {
-          scheduler = recordPush(scheduler, now, payload.serialized);
-          logger.info("pushed to TRMNL", {
-            reason: decision.reason,
-            bytes: payload.bytes,
-            printers: payload.variables.printers.length,
-            status: result.status,
+        const health = healthFrom(poll, now);
+        if (poll.status === "reauth_required") {
+          logger.error("Bambu Cloud refused the stored token", {
+            fix: "run `pnpm setup reauth` to sign in again",
           });
-        } else {
-          // Not recorded: a refused push spent no budget, and pretending it did
-          // would suppress the retry that a transient failure deserves.
-          logger.warn("TRMNL refused the push", {
-            kind: result.kind,
-            status: result.status,
-            guidance: result.guidance,
+        } else if (health.lastErrorCategory !== null) {
+          logger.warn("a cloud read failed", { category: health.lastErrorCategory });
+        }
+
+        const snapshots = snapshotsFor(coordinator, config.cloud.deviceIds, now);
+        const payload = buildWebhookPayload(snapshots, {
+          now,
+          cloud: cloudStatus,
+          maxBytes: config.trmnl.maxPayloadBytes,
+          exportJobName: config.trmnl.exportJobName,
+        });
+        if (payload.shed.length > 0) {
+          logger.debug("shed optional detail to fit the payload ceiling", {
+            given_up: payload.shed.join(","),
+            bytes: payload.bytes,
           });
         }
-      } else {
-        logger.debug("no push this cycle", {
-          reason: decision.reason,
-          retry_after_ms: decision.reason === "rate-limited" ? decision.retryAfterMs : null,
-        });
-      }
 
-      if (await sleepOrStop(CYCLE_MS, options.until)) break;
+        const decision = decide(scheduler, payload, {
+          now,
+          maxPushesPerHour: config.trmnl.maxPushesPerHour,
+          maxPayloadBytes: config.trmnl.maxPayloadBytes,
+        });
+
+        if (decision.kind === "push") {
+          const result = await dependencies.push(webhookUrl, payload.body);
+          if (result.ok) {
+            scheduler = recordPush(scheduler, now, payload.serialized);
+            logger.info("pushed to TRMNL", {
+              reason: decision.reason,
+              bytes: payload.bytes,
+              printers: payload.variables.printers.length,
+              status: result.status,
+            });
+          } else {
+            // Not recorded: a refused push spent no budget, and pretending it did
+            // would suppress the retry that a transient failure deserves.
+            logger.warn("TRMNL refused the push", {
+              kind: result.kind,
+              status: result.status,
+              guidance: result.guidance,
+            });
+          }
+        } else {
+          logger.debug("no push this cycle", {
+            reason: decision.reason,
+            retry_after_ms:
+              decision.reason === "rate-limited" ? decision.retryAfterMs : null,
+          });
+        }
+
+        if (await sleepOrStop(CYCLE_MS, stopping.signal)) break;
+      }
+    } finally {
+      // A failed push loop must not strand the MQTT socket either.
+      stopping.abort();
     }
-    stopped = true;
   })();
 
   await Promise.all([pushing, telemetry]);
@@ -222,7 +249,8 @@ interface TelemetryLoopOptions {
   username: string;
   logger: Logger;
   observe: (observation: Observation) => void;
-  shouldStop: () => boolean;
+  stopping: AbortSignal;
+  dependencies: RunDependencies;
 }
 
 /**
@@ -233,20 +261,28 @@ interface TelemetryLoopOptions {
  * a refused subscription — stops the loop rather than spinning against it.
  */
 async function runTelemetryLoop(options: TelemetryLoopOptions): Promise<void> {
-  const { config, username, logger, observe, shouldStop } = options;
+  const { config, username, logger, observe, stopping, dependencies } = options;
   const hosts = hostsFor(config.cloud.region);
   let failures = 0;
 
-  while (!shouldStop()) {
+  while (!stopping.aborted) {
     try {
-      const stream = await openTlsStream({ host: hosts.mqtt, port: CLOUD_MQTT_PORT });
-      const { end } = watchCloudMqtt(stream, {
+      const stream = await dependencies.openMqttStream({
+        host: hosts.mqtt,
+        port: CLOUD_MQTT_PORT,
+      });
+      if (stopping.aborted) {
+        await stream.close().catch(() => undefined);
+        return;
+      }
+
+      const { end, stop } = dependencies.watchMqtt(stream, {
         username,
         accessToken: config.cloud.accessToken,
         deviceIds: config.cloud.deviceIds,
         exportJobName: config.trmnl.exportJobName,
         clientId: clientId(),
-        clock: () => Date.now(),
+        clock: dependencies.now,
         onObservation: observe,
         onSubscribed: () => {
           failures = 0;
@@ -255,8 +291,14 @@ async function runTelemetryLoop(options: TelemetryLoopOptions): Promise<void> {
           });
         },
       });
-
-      const ending = await end;
+      const stopOnShutdown = (): void => {
+        void stop();
+      };
+      stopping.addEventListener("abort", stopOnShutdown, { once: true });
+      const ending = await end.finally(() => {
+        stopping.removeEventListener("abort", stopOnShutdown);
+      });
+      if (stopping.aborted) return;
       if (!isRetryable(ending.reason)) {
         logger.error("the cloud broker refused this session and retrying cannot help", {
           reason: ending.reason,
@@ -267,6 +309,7 @@ async function runTelemetryLoop(options: TelemetryLoopOptions): Promise<void> {
       }
       logger.warn("live telemetry session ended", { reason: ending.reason });
     } catch (cause) {
+      if (stopping.aborted) return;
       logger.warn("could not reach the cloud broker", {
         detail: cause instanceof Error ? cause.message : "an unknown error",
       });
@@ -275,17 +318,23 @@ async function runTelemetryLoop(options: TelemetryLoopOptions): Promise<void> {
     failures += 1;
     const delay = retryDelayMs(failures);
     logger.debug("waiting before reconnecting", { attempt: failures, delay_ms: delay });
-    if (await sleepOrStop(delay)) return;
+    if (await sleepOrStop(delay, stopping)) return;
   }
 }
 
 /** Resolves true when the bridge should stop rather than continue. */
-function sleepOrStop(ms: number, until?: Promise<void>): Promise<boolean> {
-  const { promise, resolve } = Promise.withResolvers<boolean>();
-  const timer = setTimeout(() => resolve(false), ms);
-  void until?.then(() => {
-    clearTimeout(timer);
-    resolve(true);
+function sleepOrStop(ms: number, stopping?: AbortSignal): Promise<boolean> {
+  if (stopping?.aborted) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const stop = (): void => {
+      clearTimeout(timer);
+      stopping?.removeEventListener("abort", stop);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      stopping?.removeEventListener("abort", stop);
+      resolve(false);
+    }, ms);
+    stopping?.addEventListener("abort", stop, { once: true });
   });
-  return promise;
 }

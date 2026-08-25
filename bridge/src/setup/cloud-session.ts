@@ -87,6 +87,11 @@ export function describeCloudError(error: unknown, during: CloudContext): SetupE
         "This machine could not reach Bambu Cloud.",
         "Check its internet connection, DNS, and any outbound proxy, then try again.",
       );
+    case "response-too-large":
+      return new SetupError(
+        "Bambu Cloud returned more data than this client can safely accept.",
+        "The reverse-engineered cloud API may have changed. Check for an update to this project before trying again.",
+      );
     case "client-error":
       return new SetupError(
         `Bambu Cloud refused the request (HTTP ${error.status}).`,

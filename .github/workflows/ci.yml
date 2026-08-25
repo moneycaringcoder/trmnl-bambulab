@@ -30,6 +30,9 @@ jobs:
       - name: Scan the whole tree
         run: bash scripts/secret-scan.sh --tree
 
+      - name: Test the scanner
+        run: bash scripts/secret-scan.test.sh
+
   bridge:
     name: bridge (node ${{ matrix.node }})
     runs-on: ubuntu-latest
@@ -162,10 +165,13 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      # These tests carry the two guarantees this package exists to keep, and an
-      # audit found a real break in the second one: that nothing here can publish
-      # to a printer, and that losing the lease stops collection instead of
-      # leaving two MQTT sessions on one Bambu account. Running them only locally
-      # is how that break reached review in the first place.
+      # Protects the subscribe-only boundary and lease-loss shutdown contract.
+      # Both failures are account-impacting and must stay enforced in CI.
       - name: Test
         run: pnpm test
+
+      # The container is the deployed collector artifact. Building only its
+      # TypeScript source would not catch lockfile, Corepack or COPY drift.
+      - name: Build container
+        run: docker build --file collector/Dockerfile .
+        working-directory: .

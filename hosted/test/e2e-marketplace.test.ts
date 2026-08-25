@@ -67,7 +67,7 @@ describe.skipIf(DATABASE_URL === undefined)("the marketplace flow on real Postgr
       keyring,
       async exchangeCode(code) {
         return code === "good-code"
-          ? { ok: true, accessToken: "trmnl-access-token" }
+          ? { ok: true, accessToken: "trmnl-access-token" } // secret-scan-allow: synthetic test credential
           : { ok: false };
       },
       now: () => Date.now(),

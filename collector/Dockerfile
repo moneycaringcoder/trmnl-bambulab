@@ -10,7 +10,7 @@ WORKDIR /app
 USER node
 
 COPY --chown=node:node collector/package.json collector/pnpm-lock.yaml ./
-RUN corepack pnpm@9.15.9 install --prod --frozen-lockfile
+RUN corepack pnpm@11.13.1 install --prod --frozen-lockfile
 
 FROM node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e
 

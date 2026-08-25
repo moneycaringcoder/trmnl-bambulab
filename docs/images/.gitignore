@@ -3,6 +3,7 @@
 # hand-written demo data, and they are allowlisted by exact name so a stray
 # capture dropped in this directory stays ignored rather than committing
 # silently.
+!device.png
 !full.png
 !full-two.png
 !half-horizontal.png

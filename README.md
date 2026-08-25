@@ -9,7 +9,9 @@ printing one shows progress, layer, time remaining, and temperatures.
 Bambu Cloud only. **Read only** — this never sends a command to a printer, and
 the MQTT client it uses is structurally unable to publish.
 
-![The full-screen layout with one printer mid-print](docs/images/full.png)
+![Two printers on a TRMNL display: one mid-print with progress, layers and temperatures, one finished](docs/images/device.png)
+
+*An actual TRMNL render of the plugin — 1-bit, as the e-paper panel draws it.*
 
 ## Two ways to run it
 

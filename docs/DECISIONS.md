@@ -633,9 +633,11 @@ fingerprints, the no-oracle 404 discipline — for a credential with no remainin
 legitimate holder. The self-hosted tier never used any of it; its webhook plugin
 is untouched.
 
-**Not yet verified against TRMNL's production service.** Three external seams
-remain: the live code exchange, the installation-success webhook, and TRMNL's
-real markup POST. Everything on this side of each seam is driven by tests using
-TRMNL's documented request shapes, and the whole flow ran against real Postgres.
-The management route follows TRMNL's documented `?uuid=` flow and falls back to
-an explicit open-from-TRMNL state when the UUID is absent or unknown.
+**Verified against TRMNL's production service, 2026-08-25.** The three external
+seams all behaved as documented on a real installation: the live code exchange
+succeeded with `code` alone — the client id and secret TRMNL's interface
+displays are not part of this flow — the installation-success webhook arrived
+Bearer-authenticated with the user uuid and settings id, and TRMNL's markup
+POST rendered on a physical display. The management route follows the
+documented `?uuid=` flow and falls back to an explicit open-from-TRMNL state
+when the uuid is absent or unknown.

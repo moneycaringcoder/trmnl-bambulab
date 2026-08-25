@@ -223,11 +223,10 @@ Holding the lock is only half of it. Losing it has to close the MQTT sessions,
 not merely note the loss, and that distinction is the whole control: by the time
 the heartbeat notices, the lock is already gone and a standby may have taken
 over, so a collector that kept its connections would be the second holder on
-every one of those accounts. An audit found exactly that defect here — the first
-implementation discarded the broker's stop handle, so a lost lease left the old
-process collecting and writing. It is fixed, and the fix is pinned by tests that
-fail if the handle is dropped again. Losing the lease now closes every session
-and exits non-zero.
+every one of those accounts. This failure mode is easy to build by accident —
+dropping the broker's stop handle is enough — so tests pin it: a session that
+cannot be closed, or a lost lease that keeps writing, fails the suite. Losing
+the lease closes every session and exits non-zero.
 
 All of that rests on two collectors getting two Postgres sessions, and against a
 pooled endpoint that is false while looking fine. Transaction pooling moves a

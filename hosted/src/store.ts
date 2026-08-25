@@ -140,6 +140,15 @@ export interface Store {
 
   installationById(id: string): Promise<Installation | null>;
 
+  /**
+   * Finds the installation TRMNL's management redirect speaks for.
+   *
+   * TRMNL appends `?uuid=` to the management URL, and that uuid arrived earlier
+   * on the authenticated success webhook. Null for an unknown uuid, and callers
+   * treat unknown exactly like absent.
+   */
+  installationByUserUuid(uuid: string): Promise<Installation | null>;
+
   /** Creates an installation from the install handshake. */
   createInstallation(installation: Installation): Promise<void>;
 

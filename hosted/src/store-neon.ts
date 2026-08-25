@@ -325,6 +325,18 @@ export class NeonStore implements Store {
     return parsed.ok ? parsed.value : null;
   }
 
+  async installationByUserUuid(uuid: string): Promise<Installation | null> {
+    const result: unknown = await this.sql`
+      SELECT id, access_token_tag, user_uuid, plugin_setting_id, account_id
+      FROM trmnl_installations
+      WHERE user_uuid = ${uuid}
+    `;
+    const row = rowsFrom(result)[0];
+    if (row === undefined) return null;
+    const parsed = parseInstallation(row);
+    return parsed.ok ? parsed.value : null;
+  }
+
   async createInstallation(installation: Installation): Promise<void> {
     await this.sql`
       INSERT INTO trmnl_installations (

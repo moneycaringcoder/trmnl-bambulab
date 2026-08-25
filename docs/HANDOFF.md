@@ -61,7 +61,7 @@ At <https://trmnl.com/plugins/my/new>, with these values:
 | Icon | Your choice; PNG |
 | Installation URL | `<worker>/trmnl/install` |
 | Installation Success Webhook URL | `<worker>/trmnl/installed` |
-| Plugin Management URL | `<worker>/` |
+| Plugin Management URL | `<worker>/trmnl/manage` |
 | Plugin Markup URL | `<worker>/trmnl/markup` |
 | Uninstallation Webhook URL | `<worker>/trmnl/uninstall` |
 
@@ -87,14 +87,14 @@ tested against TRMNL's documented shapes; the seams themselves are the residual
 risk. If TRMNL's requests differ from their documentation, the markup route
 answers 401 and the fix is ours to make — say what you see.
 
-## 5. One known unknown, written down
+## 5. The management flow, settled
 
-TRMNL's docs do not say whether the Plugin Management URL is opened with any
-identifying parameter. The management page therefore works from the install
-redirect's own token (valid one hour, re-mintable by pressing TRMNL's
-configure/install button again, which re-runs the handshake and lands on the
-same installation). If TRMNL turns out to pass something useful to the
-management URL, we can use it later; nothing breaks meanwhile.
+TRMNL redirects Configure to the management URL with `?uuid=` — documented in
+their Plugin Management Flow page, found after the first draft of this file.
+`/trmnl/manage` turns that uuid into a fresh one-hour session and forwards the
+browser to the setup page; the back link carries `force_refresh=true`, so TRMNL
+redraws the screen the moment the user returns from changing printers. An
+unknown uuid lands on the open-from-TRMNL panel, indistinguishable from absent.
 
 ## 6. Go public
 

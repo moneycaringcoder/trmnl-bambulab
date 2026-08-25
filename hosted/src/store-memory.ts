@@ -117,6 +117,13 @@ export class MemoryStore implements Store {
     return installation === undefined ? null : { ...installation };
   }
 
+  async installationByUserUuid(uuid: string): Promise<Installation | null> {
+    for (const installation of this.installations.values()) {
+      if (installation.userUuid === uuid) return { ...installation };
+    }
+    return null;
+  }
+
   async createInstallation(installation: Installation): Promise<void> {
     if (this.installations.has(installation.id)) {
       throw new Error("that installation already exists");

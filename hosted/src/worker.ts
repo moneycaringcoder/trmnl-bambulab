@@ -35,6 +35,7 @@ import {
 } from "./routes.ts";
 import {
   install,
+  manage,
   markup,
   recordInstallSuccess,
   uninstall,
@@ -242,6 +243,22 @@ async function trmnlResponse(request: Request, env: Env, url: URL): Promise<Resp
       destination.hash = back === null
         ? `manage=${outcome.manageToken}`
         : `manage=${outcome.manageToken}&back=${encodeURIComponent(back)}`;
+      return Response.redirect(destination.toString(), 302);
+    }
+
+    // TRMNL's Configure button: it redirects the user's browser here with the
+    // uuid the success webhook recorded. Convert it into a fragment token the
+    // same way the install redirect does; an unknown uuid lands on the page's
+    // open-from-TRMNL panel rather than an error.
+    if (route === "GET /trmnl/manage") {
+      const outcome = await manage(ports, url.searchParams.get("uuid") ?? "");
+      const destination = new URL("/", url.origin);
+      if (outcome.kind === "redirect") {
+        destination.hash =
+          outcome.backUrl === null
+            ? `manage=${outcome.manageToken}`
+            : `manage=${outcome.manageToken}&back=${encodeURIComponent(outcome.backUrl)}`;
+      }
       return Response.redirect(destination.toString(), 302);
     }
 

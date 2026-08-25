@@ -14,6 +14,7 @@ import { MemoryStore } from "../src/store-memory.ts";
 import {
   identifyInstallation,
   install,
+  manage,
   markup,
   recordInstallSuccess,
   signManageToken,
@@ -388,5 +389,56 @@ describe("uninstall", () => {
     const test = await harness();
     expect(await uninstall(test.ports, null)).toBe("unauthenticated");
     expect(await uninstall(test.ports, bearer("unknown"))).toBe("unauthenticated");
+  });
+});
+
+describe("the management redirect", () => {
+  async function installedWithUuid(test: Harness): Promise<string> {
+    test.tokensByCode.set("abc123", "tok");
+    await install(test.ports, "abc123");
+    const uuid = crypto.randomUUID();
+    await recordInstallSuccess(test.ports, bearer("tok"), {
+      user: { uuid, plugin_setting_id: 1234 },
+    });
+    return uuid;
+  }
+
+  it("turns TRMNL's uuid into a fresh management session", async () => {
+    const test = await harness();
+    const uuid = await installedWithUuid(test);
+
+    const outcome = await manage(test.ports, uuid);
+    if (outcome.kind !== "redirect") throw new Error("expected a redirect");
+
+    const installation = await verifyManageToken(
+      test.keyring,
+      test.store,
+      outcome.manageToken,
+      1_000_000,
+    );
+    expect(installation).not.toBeNull();
+    // And the way home redraws the screen immediately.
+    expect(outcome.backUrl).toBe("https://trmnl.com/plugin_settings/1234/edit?force_refresh=true");
+  });
+
+  it("answers an unknown and an absent uuid identically", async () => {
+    const test = await harness();
+    await installedWithUuid(test);
+
+    expect(await manage(test.ports, crypto.randomUUID())).toEqual({ kind: "unknown" });
+    expect(await manage(test.ports, "")).toEqual({ kind: "unknown" });
+    expect(await manage(test.ports, "   ")).toEqual({ kind: "unknown" });
+  });
+
+  it("omits the back link when the webhook never recorded a settings id", async () => {
+    const test = await harness();
+    test.tokensByCode.set("abc123", "tok");
+    await install(test.ports, "abc123");
+    const uuid = crypto.randomUUID();
+    await recordInstallSuccess(test.ports, bearer("tok"), { user: { uuid } });
+
+    const outcome = await manage(test.ports, uuid);
+    if (outcome.kind !== "redirect") throw new Error("expected a redirect");
+    expect(outcome.backUrl).toBeNull();
   });
 });

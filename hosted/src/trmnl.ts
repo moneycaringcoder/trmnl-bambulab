@@ -175,6 +175,40 @@ export async function verifyManageToken(
   return await store.installationById(id);
 }
 
+export type ManageOutcome =
+  | { kind: "redirect"; manageToken: string; backUrl: string | null }
+  /** Unknown or absent uuid, one answer: the page's open-from-TRMNL panel. */
+  | { kind: "unknown" };
+
+/**
+ * Handles TRMNL's management redirect: `?uuid=` in, a fresh session out.
+ *
+ * TRMNL sends the user's browser to the management URL with the same uuid the
+ * success webhook recorded, so a stored uuid is proof the visitor arrived
+ * through TRMNL for that installation. The uuid rides a query string —
+ * TRMNL's design, not ours — so it is immediately converted into a fragment
+ * token and never echoed anywhere.
+ *
+ * The back link points at TRMNL's own settings editor with `force_refresh`,
+ * which makes TRMNL redraw the screen the moment the user returns — so a
+ * printer-selection change is visible immediately rather than at the next
+ * scheduled refresh.
+ */
+export async function manage(ports: TrmnlPorts, uuid: string): Promise<ManageOutcome> {
+  if (uuid.trim() === "") return { kind: "unknown" };
+  const installation = await ports.store.installationByUserUuid(uuid.trim());
+  if (installation === null) return { kind: "unknown" };
+
+  return {
+    kind: "redirect",
+    manageToken: await signManageToken(ports.keyring, installation.id, ports.now()),
+    backUrl:
+      installation.pluginSettingId === null
+        ? null
+        : `https://trmnl.com/plugin_settings/${installation.pluginSettingId}/edit?force_refresh=true`,
+  };
+}
+
 /**
  * Records what the success webhook said about who installed.
  *

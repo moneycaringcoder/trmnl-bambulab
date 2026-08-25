@@ -32,4 +32,4 @@ oauth_expiry_strategy: ''
 oauth_fixed_expiry_ms: ''
 name: Bambu
 description: ''
-refresh_interval: 5
+refresh_interval: 15

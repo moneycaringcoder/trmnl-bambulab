@@ -496,3 +496,67 @@ present a short signature — passes with the fix reverted, because Vitest runs
 under Node and Node does not throw. An audit caught that. The test that actually
 guards it forces the throw by replacing `crypto.subtle.verify`, and was checked
 by reverting the fix and confirming it fails.
+
+## D18. Public surface on Cloudflare, MQTT on hardware we own
+
+**Chosen.** The hosted tier keeps its public surface on Cloudflare — the setup
+page, `GET /v1/screen`, the rate ceilings, the identity check — and gains an
+always-on *collector* running in a container on a machine the operator owns. The
+collector holds one MQTT session per hosted account and writes the same `screens`
+rows the cron writes. See `docs/COLLECTOR.md`.
+
+**The problem it solves.** Bambu's HTTP interface carries no progress, layer,
+remaining time or temperature; those come over MQTT, and MQTT wants a socket held
+open. So the hosted tier shows a printer's name and that it is printing, and
+nothing else, while the self-hosted bridge shows the numbers. That gap is
+inherent to a cron, not a bug in one.
+
+**Rejected: a Durable Object per account.** This became technically possible in
+June 2026, when Cloudflare made an active outbound `connect()` socket keep a
+Durable Object alive. It would work: the MQTT client is already
+transport-agnostic and has no publish encoder, so only a workerd TLS transport is
+missing. Two things ruled it out. A connection stops holding the object alive
+after fifteen minutes, so every account reconnects about four times an hour
+forever — modest against Bambu's documented fifty-concurrent limit, but
+permanent churn for no gain. And a Durable Object held in memory bills for
+duration, continuously, per user: it is renting an always-on process per person
+from someone else. If the shape is "one always-on process per user", owning the
+hardware is the cheaper end of the same trade.
+
+**Rejected: tunnelling the collector's own HTTP surface.** Exposing the
+collector, rather than having it write to Neon, would put an inbound path from
+the internet into the operator's home network, and would move the rate limiting
+and key checking off Cloudflare onto a self-managed box. The collector makes only
+outbound connections instead: Bambu on 8883, Neon over HTTPS. It listens on
+nothing.
+
+**The collector does not replace the cron, and that is the whole design.** Both
+write `screens`; the cron writes only when the stored render is already stale.
+Collector up, the cron finds fresh rows and skips. Collector down, the cron
+resumes and the display degrades to HTTP fidelity rather than blanking. So
+availability never becomes worse than the cron-only tier that exists today, which
+is the property worth protecting — a richer display that can disappear is a worse
+product than a thin one that cannot.
+
+**What this obliges.** The collector opens every hosted user's sealed token, so
+the machine running it holds the key that decrypts all of them. That is the
+Worker's obligation moved onto hardware somebody owns, plus a threat the Worker
+does not have: physical access. Disk encryption and a backup story that does not
+copy the key stop being paperwork. `SECURITY.md` reasons about Cloudflare and
+Neon today and must be extended before this carries anyone else's account.
+
+**Checked rather than assumed.** The hosted data layer runs in plain Node without
+modification: `store-neon.ts` and `crypto.ts` were imported into a Node 24
+script, which read a real account and opened its real sealed token.
+`@neondatabase/serverless` speaks HTTP and `crypto.subtle` is a global, so
+neither needs a Workers runtime. The collector is therefore a new entrypoint over
+existing parts rather than a second implementation, which is what makes this
+worth doing at all.
+
+**Measured, not estimated.** The bridge holding one live MQTT session for an
+account with two printers sits at 116 MB resident with 25 open file descriptors.
+Bambu's cloud MQTT is one connection per account, so another account costs one
+socket and a few kilobytes — about 0.2 MB. 512 MB covers roughly a thousand
+accounts. RAM is not the constraint; Neon write rate, file descriptors and
+Bambu's tolerance are, in that order.
+

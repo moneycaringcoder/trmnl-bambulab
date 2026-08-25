@@ -20,7 +20,7 @@ public issue.
 | `bridge/test/` | Vitest suites, driven by those fixtures. |
 | `src/` | The TRMNL Private Plugin: shared markup and the four viewport Liquid templates. TRMNL's repository sync reads this path and writes `src/settings.yml`, so neither the directory nor that file may move. |
 | `hosted/` | The hosted tier: Neon schema and store, token encryption, and the Cloudflare Worker cron. |
-| `docs/` | Decisions, the plan, what we know of the cloud interface, the plugin contract, and sources. |
+| `docs/` | Architecture, protocol notes, plugin contract, development plan, the collector design and its operations guide, and sources. |
 | `scripts/` | `secret-scan.sh` and the agent session launcher. |
 | `examples/` | Configuration examples. Never real values. |
 | `.githooks/` | The pre-commit secret gate. |

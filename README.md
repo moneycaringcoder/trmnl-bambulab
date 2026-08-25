@@ -78,7 +78,7 @@ stale says so rather than presenting old numbers as current.
 | `bridge/` | The bridge: cloud providers, normalizers, coordinator, payload, MQTT client, daemon, setup CLI |
 | `src/` | The TRMNL Private Plugin: shared markup and the four Liquid views. TRMNL syncs this path. |
 | `hosted/` | The hosted tier: Neon schema, token encryption, and the Cloudflare Worker |
-| `docs/` | Decisions, the plan, what we know of the cloud interface, sources |
+| `docs/` | Decisions, the plan, what we know of the cloud interface, the collector design, sources |
 | `scripts/` | Secret scanner |
 | `.omp/` | Agent charter and the project's review agent |
 

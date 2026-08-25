@@ -13,6 +13,17 @@ body:
         Found something exploitable? Do not file it here. Use the Security tab
         and read `SECURITY.md` first.
 
+  - type: dropdown
+    id: tier
+    attributes:
+      label: How are you running the project?
+      options:
+        - Hosted marketplace plugin
+        - Self-hosted bridge
+        - Self-deployed hosted tier
+    validations:
+      required: true
+
   - type: input
     id: printer_model
     attributes:
@@ -34,21 +45,18 @@ body:
       required: true
 
   - type: input
-    id: bridge_version
+    id: version
     attributes:
-      label: Bridge version
-      description: Release tag, or the short commit hash you are running.
+      label: Version
+      description: Release tag or short commit hash, if known.
       placeholder: "v0.1.0 or 1a2b3c4"
-    validations:
-      required: true
 
   - type: input
     id: runtime
     attributes:
-      label: Node version and operating system
-      placeholder: "node 22.x on Debian 12"
-    validations:
-      required: true
+      label: Self-hosted runtime
+      description: Leave blank for the hosted marketplace plugin.
+      placeholder: "Node 22.18 on Debian 12"
 
   - type: textarea
     id: expected

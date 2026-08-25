@@ -16,12 +16,21 @@ updates:
         update-types:
           - minor
           - patch
+      major:
+        update-types:
+          - major
     ignore:
       # The runtime floor is Node 22; types for newer majors would let code
       # typecheck against APIs the deployed runtimes do not have.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
     open-pull-requests-limit: 5
+
+  - package-ecosystem: docker
+    directory: "/collector"
+    schedule:
+      interval: weekly
+      day: monday
 
   - package-ecosystem: github-actions
     directory: "/"

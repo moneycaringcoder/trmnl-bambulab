@@ -21,10 +21,10 @@ plugin and deliberately omits its remote id.
 
 ## Hosted installation
 
-Install the third-party plugin from the TRMNL marketplace. TRMNL redirects your
-browser through the install handshake, after which the setup page asks you for a
-Bambu email code and lets you choose printers. There is no credential to copy
-between services.
+The marketplace listing is awaiting TRMNL review. Once it is listed, installing
+the plugin redirects your browser through the install handshake; the setup page
+then asks for a Bambu email code and lets you choose printers. There is no
+long-lived credential to copy between services.
 
 ## Payload
 

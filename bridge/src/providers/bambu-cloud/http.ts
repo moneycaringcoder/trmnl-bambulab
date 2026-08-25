@@ -21,7 +21,11 @@ export type CloudErrorCategory =
   | "server-error"
   | "client-error"
   | "network-error"
-  | "timeout";
+  | "timeout"
+  | "response-too-large";
+
+/** Hard ceiling for any decoded Bambu Cloud response body. */
+export const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 export class CloudError extends Error {
   // Plain fields, not parameter properties: the bridge runs from source under
@@ -101,19 +105,61 @@ export async function request<T>(
   if (body !== undefined) init.body = JSON.stringify(body);
 
   let response: Response;
+  let text: string;
   try {
     response = await fetch(`${hosts.api}${path}`, init);
-  } catch {
+    text = await readBoundedText(response, controller);
+  } catch (cause) {
+    if (cause instanceof CloudError) throw cause;
     // The cause can name the host and the request detail; the category is all
-    // the caller is allowed to see.
+    // the caller is allowed to see. The same deadline covers both headers and
+    // body consumption.
     throw new CloudError(0, controller.signal.aborted ? "timeout" : "network-error");
   } finally {
     clearTimeout(timer);
   }
 
-  const text = await response.text();
   if (!response.ok) {
     throw new CloudError(response.status, categorize(response.status, text));
   }
   return (text ? (JSON.parse(text) as T) : ({} as T));
+}
+
+async function readBoundedText(
+  response: Response,
+  controller: AbortController,
+): Promise<string> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+    controller.abort();
+    throw new CloudError(response.status, "response-too-large");
+  }
+  if (response.body === null) return "";
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (bytes + value.byteLength > MAX_RESPONSE_BYTES) {
+        controller.abort();
+        void reader.cancel().catch(() => undefined);
+        throw new CloudError(response.status, "response-too-large");
+      }
+      chunks.push(value);
+      bytes += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
 }

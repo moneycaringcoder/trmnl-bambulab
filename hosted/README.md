@@ -36,15 +36,20 @@ nothing usable. Device ids are printer identifiers; we never log them.
 
 ## Install and check
 
-From this directory:
+Node 22.18 or newer is required. From the repository root, enable Corepack and
+install both package trees: the hosted tier imports shared bridge modules from
+source.
 
 ```sh
-pnpm install
-pnpm typecheck
-pnpm test
+corepack enable
+pnpm --dir bridge install --frozen-lockfile
+pnpm --dir hosted install --frozen-lockfile
+pnpm --dir hosted typecheck
+pnpm --dir hosted test
 ```
 
-Node 22.18 or newer is required. Local tests use the complete in-memory store and do not contact Neon, Bambu Cloud, or TRMNL.
+Local tests use the complete in-memory store and do not contact Neon, Bambu
+Cloud, or TRMNL.
 
 ## Apply the migrations
 

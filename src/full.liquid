@@ -63,51 +63,55 @@ rather than an empty one.
     <div class="list">
       <div class="item">
         <div class="content">
-          {% if unreadable %}
+          {% if printer.stale %}
             {% comment %}
               Deliberately no number. A stale reading is the bridge's fault
               rather than the printer's, and showing the last known figures at
               headline size would present them as current.
             {% endcomment %}
-            <span class="value {{ headline_word }}">&mdash;</span>
+            <span class="value {{ headline_word | escape }}">Reading old</span>
+          {% elsif printer.state == "offline" %}
+            <span class="value {{ headline_word | escape }}">Offline</span>
+          {% elsif printer.state == "unknown" %}
+            <span class="value {{ headline_word | escape }}">Unknown</span>
           {% elsif printer.state == "idle" %}
-            <span class="value {{ headline_word }}">Ready</span>
+            <span class="value {{ headline_word | escape }}">Ready</span>
           {% elsif printer.progress %}
-            <span class="value {{ headline }} value--tnums">{{ printer.progress }}%</span>
+            <span class="value {{ headline | escape }} value--tnums">{{ printer.progress | escape }}%</span>
           {% else %}
-            <span class="value {{ headline_word }}">{{ printer.state | capitalize }}</span>
+            <span class="value {{ headline_word | escape }}">{{ printer.state | capitalize | escape }}</span>
           {% endif %}
 
           <span class="label">
-            {% if printer.name %}{{ printer.name }}{% else %}Printer {{ forloop.index }}{% endif %}
-            {% if printer.stale %}
-              &middot; reading is old
-            {% elsif headline_is_number %}
-              &middot; {{ printer.state | capitalize }}
+            {% if printer.name %}{{ printer.name | escape }}{% else %}Printer {{ forloop.index | escape }}{% endif %}
+            {% if headline_is_number %}
+              &middot; {{ printer.state | capitalize | escape }}
             {% endif %}
-            {% comment %}
-              Bambu's stage for a running print is frequently the word
-              "Printing", which is the state as well, so the label read
-              "Name - Printing - Printing" on real data. A stage only earns its
-              place when it says something the state does not.
-            {% endcomment %}
-            {% assign state_word = printer.state | downcase %}
-            {% assign stage_word = printer.stage | downcase %}
-            {% if printer.stage and stage_word != state_word %}
-              &middot; {{ printer.stage }}
-            {% endif %}
-            {% if printer.job %} &middot; {{ printer.job }}{% endif %}
-            {% comment %}
-              At three printers the figures move onto this line, because the
-              grid below needs about 45px and three blocks of headline, label,
-              rail and grid come to more than the 430px available. Losing the
-              labels is a smaller cost than clipping the percentages.
-            {% endcomment %}
-            {% if printers.size > 2 %}
-              {% if printer.remaining %} &middot; {{ printer.remaining }} left{% endif %}
-              {% if printer.layer %} &middot; layer {{ printer.layer }}{% if printer.layers %}/{{ printer.layers }}{% endif %}{% endif %}
-            {% endif %}
-            {% if printer.alert %} &middot; ALERT {{ printer.alert }}{% endif %}
+            {% unless unreadable %}
+              {% comment %}
+                Bambu's stage for a running print is frequently the word
+                "Printing", which is the state as well, so the label read
+                "Name - Printing - Printing" on real data. A stage only earns its
+                place when it says something the state does not.
+              {% endcomment %}
+              {% assign state_word = printer.state | downcase %}
+              {% assign stage_word = printer.stage | downcase %}
+              {% if printer.stage and stage_word != state_word %}
+                &middot; {{ printer.stage | escape }}
+              {% endif %}
+              {% if printer.job %} &middot; {{ printer.job | escape }}{% endif %}
+              {% comment %}
+                At three printers the figures move onto this line, because the
+                grid below needs about 45px and three blocks of headline, label,
+                rail and grid come to more than the 430px available. Losing the
+                labels is a smaller cost than clipping the percentages.
+              {% endcomment %}
+              {% if printers.size > 2 %}
+                {% if printer.remaining %} &middot; {{ printer.remaining | escape }} left{% endif %}
+                {% if printer.layer %} &middot; layer {{ printer.layer | escape }}{% if printer.layers %}/{{ printer.layers | escape }}{% endif %}{% endif %}
+              {% endif %}
+              {% if printer.alert %} &middot; ALERT {{ printer.alert | escape }}{% endif %}
+            {% endunless %}
           </span>
         </div>
       </div>
@@ -115,8 +119,8 @@ rather than an empty one.
       {% comment %}
         Both the rail and the figures sit behind the same guard as the headline.
         The payload still carries a percentage for a printer that was printing
-        when we last heard from it, so a filled rail beside a dashed headline
-        would show an old value as though it were current.
+        when we last heard from it, so a filled rail beneath an unavailable
+        state would show an old value as though it were current.
       {% endcomment %}
       {% unless unreadable %}
         {% render "progress_rail", progress: printer.progress, size: "progress-bar--large" %}

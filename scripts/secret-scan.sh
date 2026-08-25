@@ -31,11 +31,10 @@ case "${1-}" in
   *) mode="paths"; explicit_paths=("$@") ;;
 esac
 
-# Paths that are allowed to describe forbidden patterns without containing them.
+# The scanner and hook must be able to contain the patterns they enforce.
 is_exempt() {
   case "$1" in
-    scripts/secret-scan.sh|.githooks/*) return 0 ;;
-    docs/*|AGENTS.md|README.md) return 0 ;;
+    scripts/secret-scan.sh|scripts/secret-scan.test.sh|.githooks/*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -60,8 +59,8 @@ rules=(
   'uuid|blocker|Bare UUID literal|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
   'jwt|blocker|JSON Web Token|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}'
   'bearer|blocker|Bearer token literal|[Bb]earer\s+[A-Za-z0-9._~+/-]{20,}'
-  'token-assign|blocker|Token or key assignment with a literal value|(access[_-]?token|refresh[_-]?token|api[_-]?key|apiKey|auth[_-]?token|[Ss][Ee][Cc][Rr][Ee][Tt])["'"'"']?\s*[:=]\s*["'"'"'][A-Za-z0-9._~+/-]{16,}'
-  'password-assign|blocker|Password assignment with a literal value|(password|passwd|pwd)["'"'"']?\s*[:=]\s*["'"'"'][^"'"'"'{$][^"'"'"']{3,}'
+  'token-assign|blocker|Token or key assignment with a literal value|((access[_-]?token|refresh[_-]?token|api[_-]?key|apiKey|auth[_-]?token|secret)["'"'"']?\s*[:=]\s*["'"'"'][A-Za-z0-9._~+/-]{16,}|^[[:space:]]*(export[[:space:]]+)?[A-Za-z0-9_]*(access[_-]?token|refresh[_-]?token|api[_-]?key|apiKey|auth[_-]?token|secret)[[:space:]]*=[[:space:]]*[A-Za-z0-9._~+/-]{16,})'
+  'password-assign|blocker|Password assignment with a literal value|((password|passwd|pwd)["'"'"']?\s*[:=]\s*["'"'"'][^"'"'"'{$][^"'"'"']{3,}|^[[:space:]]*(export[[:space:]]+)?[A-Za-z0-9_]*(password|passwd|pwd)[[:space:]]*=[[:space:]]*[^"'"'"'${}#[:space:]]{3,})'
   'bambu-account|blocker|Bambu Cloud account identifier|(bambu[_-]?(user|email|account)|BAMBU_(USER|EMAIL|ACCOUNT))["'"'"']?\s*[:=]\s*["'"'"']?[^"'"'"'{$ ]+@'
   'private-key|blocker|Private key block|-----BEGIN [A-Z ]*PRIVATE KEY-----'
   # The hosted tier introduced a database, and a connection string carries its
@@ -91,25 +90,43 @@ warnings=0
 
 scan_file() {
   local path="$1"
-  [ -f "$path" ] || return 0
+  local source="$path"
+  local staged_blob=""
+  if [ "$mode" = "staged" ]; then
+    staged_blob=$(mktemp) || {
+      echo "secret-scan: could not create a staged-blob buffer" >&2
+      exit 2
+    }
+    if ! git show ":$path" >"$staged_blob" 2>/dev/null; then
+      rm -f "$staged_blob"
+      return 0
+    fi
+    source="$staged_blob"
+  elif [ ! -f "$source" ]; then
+    return 0
+  fi
   # Skip binaries.
-  if ! grep -Iq . "$path" 2>/dev/null; then return 0; fi
+  if ! grep -Iq . "$source" 2>/dev/null; then
+    [ -z "$staged_blob" ] || rm -f "$staged_blob"
+    return 0
+  fi
   local exempt=0
   is_exempt "$path" && exempt=1
-
   local rule id severity desc pattern hits
+  local -a grep_options
   for rule in "${rules[@]}"; do
     IFS='|' read -r id severity desc pattern <<<"$rule"
-    # Documentation may name a pattern without holding one, so an exempt path
-    # skips the shape-based rules. It does not skip these: each one matches
-    # material that is unambiguously a live credential wherever it appears, and
-    # setup prose is exactly where somebody pastes a connection string or a key
-    # while writing an example.
+    # Exempt enforcement files skip shape-based rules because they necessarily
+    # contain those patterns. Credential material remains forbidden everywhere.
     case "$id" in
       jwt|private-key|bearer|postgres-url|key-assign) : ;;
       *) [ "$exempt" = 1 ] && continue ;;
     esac
-    hits=$(grep -nE "$pattern" -- "$path" 2>/dev/null | grep -vE 'secret-scan-allow' | head -5)
+    grep_options=(-nE)
+    case "$id" in
+      token-assign|password-assign) grep_options=(-niE) ;;
+    esac
+    hits=$(grep "${grep_options[@]}" "$pattern" -- "$source" 2>/dev/null | grep -vE 'secret-scan-allow' | head -5)
     [ -n "$hits" ] || continue
     while IFS= read -r hit; do
       local line="${hit%%:*}"
@@ -122,6 +139,7 @@ scan_file() {
       fi
     done <<<"$hits"
   done
+  [ -z "$staged_blob" ] || rm -f "$staged_blob"
 }
 
 # Files that must never be committed at all, regardless of content.

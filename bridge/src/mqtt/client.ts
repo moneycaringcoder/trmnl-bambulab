@@ -95,6 +95,12 @@ export type SessionEnd =
  */
 export const DEFAULT_KEEP_ALIVE_SECONDS = 60;
 export const DEFAULT_HANDSHAKE_TIMEOUT_MS = 20_000;
+/**
+ * MQTT allows some scheduling latitude around keep-alive traffic. A subscribed
+ * session that receives no packet for one and a half keep-alive periods is
+ * treated as half-open and reconnected by its caller.
+ */
+export const INBOUND_IDLE_KEEP_ALIVE_MULTIPLE = 1.5;
 
 export class MqttSession {
   private readonly stream: ByteStream;
@@ -103,8 +109,10 @@ export class MqttSession {
   private readonly timers: Timers;
   private cancelKeepAlive: (() => void) | null = null;
   private cancelHandshakeDeadline: (() => void) | null = null;
+  private cancelInboundIdle: (() => void) | null = null;
   private stopping = false;
   private subscribed = false;
+  private inboundIdleTimedOut = false;
 
   constructor(stream: ByteStream, options: SessionOptions) {
     this.stream = stream;
@@ -158,6 +166,8 @@ export class MqttSession {
       this.cancelHandshakeDeadline = null;
       this.cancelKeepAlive?.();
       this.cancelKeepAlive = null;
+      this.cancelInboundIdle?.();
+      this.cancelInboundIdle = null;
     }
   }
 
@@ -165,6 +175,8 @@ export class MqttSession {
   async stop(): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
+    this.cancelInboundIdle?.();
+    this.cancelInboundIdle = null;
     // DISCONNECT is a courtesy, not a requirement, so a failure to send it
     // must not prevent the socket from closing.
     try {
@@ -178,6 +190,7 @@ export class MqttSession {
   private async pump(keepAliveSeconds: number): Promise<SessionEnd> {
     for await (const chunk of this.stream.read()) {
       for (const packet of this.reader.push(chunk)) {
+        if (this.subscribed) this.armInboundIdle(keepAliveSeconds);
         if (packet.kind === "connack") {
           if (packet.returnCode !== 0) {
             const reason = CONNACK_REASON[packet.returnCode] ?? "an unrecognized reason";
@@ -213,6 +226,7 @@ export class MqttSession {
           if (!this.subscribed) {
             this.subscribed = true;
             this.options.onSubscribed?.();
+            this.armInboundIdle(keepAliveSeconds);
           }
           continue;
         }
@@ -224,7 +238,23 @@ export class MqttSession {
       }
     }
 
+    if (this.inboundIdleTimedOut) {
+      return { reason: "failed", detail: "the subscribed broker session became silent" };
+    }
     return this.stopping ? { reason: "closed-by-caller" } : { reason: "closed-by-broker" };
+  }
+
+  private armInboundIdle(keepAliveSeconds: number): void {
+    if (this.stopping) return;
+    this.cancelInboundIdle?.();
+    this.cancelInboundIdle = this.timers.once(
+      Math.ceil(keepAliveSeconds * 1000 * INBOUND_IDLE_KEEP_ALIVE_MULTIPLE),
+      () => {
+        this.cancelInboundIdle = null;
+        this.inboundIdleTimedOut = true;
+        void this.stop();
+      },
+    );
   }
 }
 

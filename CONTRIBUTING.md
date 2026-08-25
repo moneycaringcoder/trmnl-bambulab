@@ -31,21 +31,23 @@ boundaries in their shortest form and applies to humans as much as to agents.
 
 ## Getting set up
 
-From the repository root, enable the hook before installing dependencies:
+From the repository root, enable Corepack and the secret hook before installing
+dependencies:
 
 ```sh
+corepack enable
 git config core.hooksPath .githooks
-pnpm --dir bridge install
-pnpm --dir hosted install
-pnpm --dir collector install
+pnpm --dir bridge install --frozen-lockfile
+pnpm --dir hosted install --frozen-lockfile
+pnpm --dir collector install --frozen-lockfile
 ```
 
 A fresh clone does not enable repository hooks automatically. Until the hook
 path is configured, nothing stops a commit that leaks a printer identifier, and
 a leak is permanent once pushed.
 
-Node 22.18 or newer is required. pnpm is the package manager, and each of the
-three packages has its own committed lockfile.
+Node 22.18 or newer is required. Each package pins pnpm 11.13.1 through its
+`packageManager` field and has its own committed lockfile.
 
 ## The secret gate
 
@@ -92,11 +94,9 @@ inside such a directory is allowed, so the directory can explain itself, and so
 is a `.dev.vars.example` whose values are blank. The example is still scanned in
 full, so a filled-in one is refused.
 
-Documentation paths are partially exempt so `docs/` can describe a pattern
-without containing one. The exemption does not cover rules that match
-unambiguously live material — JSON Web Tokens, bearer tokens, private keys,
-connection strings with a password, and key assignments — because setup prose
-is exactly where you might paste a real value while writing an example.
+Documentation is scanned by the same rules as source. A line that must describe
+a forbidden shape needs the narrow `secret-scan-allow` marker and an explanation
+in the pull request; whole files and directories are never exempt.
 
 ### What it does not catch
 

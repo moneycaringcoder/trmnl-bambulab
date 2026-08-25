@@ -49,6 +49,69 @@ import {
 import { createLogger, type LogDetail } from "./log.ts";
 import { NeonStore } from "./store-neon.ts";
 
+/** Enough for three selections or TRMNL's webhook, small enough to bound abuse. */
+const JSON_BODY_LIMIT_BYTES = 8 * 1024;
+
+type JsonBody =
+  | { kind: "ok"; value: unknown }
+  | { kind: "malformed" }
+  | { kind: "too-large" };
+
+/**
+ * Reads a small JSON body without trusting Content-Length.
+ *
+ * The header is only an early refusal. The stream count remains authoritative,
+ * so an absent, malformed, or deliberately understated header cannot turn
+ * `request.text()` into an unbounded allocation.
+ */
+async function readJsonBody(request: Request): Promise<JsonBody> {
+  const statedLength = request.headers.get("Content-Length");
+  if (
+    statedLength !== null &&
+    /^\d+$/.test(statedLength) &&
+    Number(statedLength) > JSON_BODY_LIMIT_BYTES
+  ) {
+    return { kind: "too-large" };
+  }
+
+  if (request.body === null) return { kind: "ok", value: null };
+
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let bytes = 0;
+  let raw = "";
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      if (chunk.value === undefined) continue;
+      if (chunk.value.byteLength > JSON_BODY_LIMIT_BYTES - bytes) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The size decision is already final; cancellation failure is not
+          // information the anonymous caller should observe.
+        }
+        return { kind: "too-large" };
+      }
+      bytes += chunk.value.byteLength;
+      raw += decoder.decode(chunk.value, { stream: true });
+    }
+    raw += decoder.decode();
+  } catch {
+    return { kind: "malformed" };
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (raw.trim() === "") return { kind: "ok", value: null };
+  try {
+    return { kind: "ok", value: JSON.parse(raw) as unknown };
+  } catch {
+    return { kind: "malformed" };
+  }
+}
+
 const logger = createLogger("info");
 
 /**
@@ -193,21 +256,18 @@ export default {
  * never logged: an anonymous caller must not control our log volume.
  */
 async function trmnlResponse(request: Request, env: Env, url: URL): Promise<Response> {
-  // The same address ceiling the polling endpoint used, kept for the same
-  // job: bounding what an anonymous caller can spend of our database budget.
-  try {
-    const permitted = await env.SCREEN_ADDRESS_LIMITER.limit({
-      key: request.headers.get("CF-Connecting-IP") ?? "unknown",
-    });
-    if (!permitted.success) {
-      return new Response("Too Many Requests", {
-        status: 429,
-        headers: { "Cache-Control": "no-store", "Retry-After": "60" },
-      });
-    }
-  } catch {
-    // A limiter fault must not take the whole surface down; the token check
-    // below still gates everything that matters.
+  const route = `${request.method} ${url.pathname}`;
+  const limited = await screenAddressLimitResponse(
+    request,
+    env,
+    route === "GET /trmnl/install",
+  );
+  if (limited !== null) return limited;
+  let installedBody: unknown = null;
+  if (route === "POST /trmnl/installed") {
+    const parsed = await readJsonBody(request);
+    if (parsed.kind === "too-large") return payloadTooLarge();
+    if (parsed.kind === "ok") installedBody = parsed.value;
   }
 
   const store = new NeonStore(env.DATABASE_URL);
@@ -218,7 +278,6 @@ async function trmnlResponse(request: Request, env: Env, url: URL): Promise<Resp
     return serviceUnavailable();
   }
   const ports = trmnlPortsFrom(store, keyring);
-  const route = `${request.method} ${url.pathname}`;
 
   try {
     // The install redirect: TRMNL sends the user's browser here with a
@@ -263,11 +322,10 @@ async function trmnlResponse(request: Request, env: Env, url: URL): Promise<Resp
     }
 
     if (route === "POST /trmnl/installed") {
-      const body: unknown = await request.json().catch(() => null);
       const result = await recordInstallSuccess(
         ports,
         request.headers.get("Authorization"),
-        body,
+        installedBody,
       );
       if (result === "unauthenticated") return unauthorized();
       if (result === "invalid") return json({ error: "Send TRMNL's webhook body." }, 400);
@@ -344,6 +402,20 @@ function notFound(): Response {
  * single well-meaning log line would breach `AGENTS.md`.
  */
 async function enrolResponse(request: Request, env: Env, url: URL): Promise<Response> {
+  const limited = await screenAddressLimitResponse(request, env);
+  if (limited !== null) return limited;
+
+  const route = `${request.method} ${url.pathname}`;
+  let body: unknown = null;
+  if (request.method === "POST") {
+    const parsed = await readJsonBody(request);
+    if (parsed.kind === "too-large") return payloadTooLarge();
+    if (parsed.kind === "malformed") {
+      return routeResponse({ kind: "invalid", guidance: "Send a JSON body." });
+    }
+    body = parsed.value;
+  }
+
   const store = new NeonStore(env.DATABASE_URL);
   let keyring;
   try {
@@ -366,20 +438,6 @@ async function enrolResponse(request: Request, env: Env, url: URL): Promise<Resp
   };
 
   const authorization = request.headers.get("Authorization");
-  let body: unknown = null;
-  if (request.method === "POST") {
-    const raw = await request.text().catch(() => "");
-    if (raw.trim() !== "") {
-      try {
-        body = JSON.parse(raw);
-      } catch {
-        // A malformed body is a client mistake, and saying so beats a 500.
-        return routeResponse({ kind: "invalid", guidance: "Send a JSON body." });
-      }
-    }
-  }
-
-  const route = `${request.method} ${url.pathname}`;
   try {
     switch (route) {
       case "POST /v1/enrol/code":
@@ -457,6 +515,46 @@ function json(body: unknown, status: number): Response {
     status,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+/**
+ * The anonymous address ceiling is a cost guard, not authentication. Verified
+ * traffic defaults fail-open for availability; callers that perform anonymous
+ * outbound work request fail-closed behavior. ENROL_LIMITER remains fail-closed
+ * inside the Bambu email/code operations.
+ */
+async function screenAddressLimitResponse(
+  request: Request,
+  env: Env,
+  failClosed = false,
+): Promise<Response | null> {
+  try {
+    const permitted = await env.SCREEN_ADDRESS_LIMITER.limit({
+      key: request.headers.get("CF-Connecting-IP") ?? "unknown",
+    });
+    if (!permitted.success) {
+      return new Response("Too Many Requests", {
+        status: 429,
+        headers: { "Cache-Control": "no-store", "Retry-After": "60" },
+      });
+    }
+  } catch {
+    // The install redirect performs an unauthenticated outbound token exchange,
+    // so a missing limiter must close that path. Other routes retain fail-open
+    // availability; their token checks and Bambu-operation limiter still hold.
+    if (failClosed) return serviceUnavailable();
+  }
+  return null;
+}
+
+function payloadTooLarge(): Response {
+  return new Response("Payload Too Large", {
+    status: 413,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-store",
     },
   });

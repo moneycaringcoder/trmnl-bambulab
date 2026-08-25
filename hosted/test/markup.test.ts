@@ -106,37 +106,87 @@ describe("renderScreenMarkup", () => {
     }
   });
 
-  it.each([
-    ["unknown", false],
-    ["printing", true],
-  ])("renders a dash for an unreadable %s printer", async (state, stale) => {
+  it("escapes malicious printer, job, stage, and alert text exactly once", async () => {
     const result = await renderScreenMarkup({
       ...printingPayload,
       printers: [
         {
-          state,
-          raw_state: "SYNTHETIC_UNREADABLE",
-          name: "Unavailable Printer",
-          online: state !== "unknown",
-          stale,
+          state: "printing",
+          raw_state: "SYNTHETIC_RUNNING",
+          name: '<strong data-name="bad">Printer & Co</strong>',
+          online: true,
+          stale: false,
           progress: 42,
           layer: 81,
           layers: 194,
           remaining: "1h 16m",
-          stage: "Printing",
+          stage: "<svg onload=stage()>",
           nozzle: 220,
           nozzle_target: 220,
           bed: 60,
           bed_target: 60,
           material: "Demo PLA",
-          job: null,
-          alert: null,
+          job: "</span><script>job()</script>",
+          alert: "<img src=x onerror=alert(1)>",
         },
       ],
     });
 
-    expect(result.markup).toContain("&mdash;");
-    expect(result.markup).not.toContain("42%");
-    expect(result.markup).not.toContain("progress-bar");
+    for (const markup of Object.values(result)) {
+      expect(markup).not.toContain('<strong data-name="bad">');
+      expect(markup).not.toContain("<script>");
+      expect(markup).not.toContain("<img src=x");
+      expect(markup).not.toContain("<svg onload");
+      expect(markup).toContain("&lt;strong data-name=&#34;bad&#34;&gt;Printer &amp; Co&lt;/strong&gt;");
+      expect(markup).not.toContain("&amp;lt;");
+    }
+    expect(result.markup).toContain("&lt;/span&gt;&lt;script&gt;job()&lt;/script&gt;");
+    expect(result.markup).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(result.markup).toContain("&middot;");
+    expect(result.markup).not.toContain("&amp;middot;");
+  });
+
+  it("distinguishes unavailable states, hides old metrics, and names three printers", async () => {
+    const printers = [
+      { state: "printing", stale: true, name: "Stale Alpha", progress: 41 },
+      { state: "offline", stale: false, name: "Offline Beta", progress: 42 },
+      { state: "unknown", stale: false, name: "Unknown Gamma", progress: 43 },
+    ].map((printer) => ({
+      ...printer,
+      raw_state: "SYNTHETIC_UNREADABLE",
+      online: false,
+      layer: 81,
+      layers: 194,
+      remaining: "41m old",
+      stage: "Old stage",
+      nozzle: 220,
+      nozzle_target: 220,
+      bed: 60,
+      bed_target: 60,
+      material: "Old material",
+      job: "Old job",
+      alert: "Old alert",
+    }));
+
+    const result = await renderScreenMarkup({ ...printingPayload, printers });
+
+    for (const markup of Object.values(result)) {
+      expect(markup).toContain("Reading old");
+      expect(markup).toContain("Offline");
+      expect(markup).toContain("Unknown");
+      expect(markup).toContain("Stale Alpha");
+      expect(markup).toContain("Offline Beta");
+      expect(markup).toContain("Unknown Gamma");
+      expect(markup).not.toContain("41%");
+      expect(markup).not.toContain("42%");
+      expect(markup).not.toContain("43%");
+      expect(markup).not.toContain("progress-bar");
+      expect(markup).not.toContain("41m old");
+      expect(markup).not.toContain("Old stage");
+      expect(markup).not.toContain("Old material");
+      expect(markup).not.toContain("Old job");
+      expect(markup).not.toContain("Old alert");
+      expect(markup).not.toContain("! ALERT");
+    }
   });
 });

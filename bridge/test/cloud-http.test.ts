@@ -1,5 +1,21 @@
-import { describe, expect, it } from "vitest";
-import { CloudError, baseHeaders, categorize } from "../src/providers/bambu-cloud/http.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  CloudError,
+  MAX_RESPONSE_BYTES,
+  baseHeaders,
+  categorize,
+  request,
+} from "../src/providers/bambu-cloud/http.ts";
+import type { CloudHosts } from "../src/providers/bambu-cloud/hosts.ts";
+
+const HOSTS: CloudHosts = {
+  api: "https://cloud.example.test",
+  mqtt: "mqtt.example.test",
+};
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("categorize", () => {
   it("separates an expired token from a Cloudflare challenge", () => {
@@ -50,5 +66,59 @@ describe("baseHeaders", () => {
       "Content-Type": "application/json",
       Accept: "application/json",
     });
+  });
+});
+
+describe("request bounds", () => {
+  it("keeps the abort deadline active while the response body is being read", async () => {
+    vi.stubGlobal("fetch", async (_input: string, init: RequestInit) => {
+      const signal = init.signal as AbortSignal;
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            signal.addEventListener(
+              "abort",
+              () => controller.error(new DOMException("aborted", "AbortError")),
+              { once: true },
+            );
+          },
+        }),
+        { status: 200 },
+      );
+    });
+
+    await expect(request(HOSTS, "/slow", { timeoutMs: 1 })).rejects.toMatchObject({
+      status: 0,
+      category: "timeout",
+      message: "bambu cloud request failed: timeout",
+    });
+  });
+
+  it("refuses an oversized streamed body without exposing its contents", async () => {
+    const privateBody = `private-account-marker${"x".repeat(MAX_RESPONSE_BYTES)}`;
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(new TextEncoder().encode(privateBody), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+
+    const error = await request(HOSTS, "/oversized").catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(CloudError);
+    expect(error).toMatchObject({ status: 200, category: "response-too-large" });
+    expect(String(error)).not.toContain("private-account-marker");
+  });
+
+  it("still refuses to follow redirects", async () => {
+    let redirect: RequestRedirect | undefined;
+    vi.stubGlobal("fetch", async (_input: string, init: RequestInit) => {
+      redirect = init.redirect;
+      return new Response("{}", { status: 200 });
+    });
+
+    await request(HOSTS, "/redirect");
+    expect(redirect).toBe("manual");
   });
 });

@@ -62,9 +62,24 @@ export interface CollectorPorts {
   random(): number;
 }
 
+export const ACCOUNT_START_STAGGER_MS = 250;
+
 export interface CollectorOptions {
   /** A ceiling, so one instance cannot take on more than it was sized for. */
   maxAccounts: number;
+  /** Discovery continues on this cadence while healthy account sessions stay live. */
+  rediscoverMs: number;
+  /**
+   * Spaces cold-start admission independently of `maxAccounts`.
+   *
+   * Steady-state sessions remain concurrent; only the first preference, poll,
+   * and MQTT handshake for each newly discovered account are staggered.
+   */
+  accountStartStaggerMs?: number;
+}
+
+export interface AccountCollector {
+  (account: Account, ports: CollectorPorts): Promise<void>;
 }
 
 /**
@@ -180,27 +195,111 @@ export async function collectAccount(
 }
 
 /**
- * Collects every account, one session each, until stopped.
+ * Discovers and collects accounts until stopped.
  *
- * Returns once every account it started has finished, which is normal on a
- * fresh deployment with nobody enrolled and after the cloud has refused
- * everyone. Reading the account set again is the caller's job, because the
- * caller is the one holding the lease and deciding the cadence.
+ * Discovery has its own cadence: a healthy MQTT session never resolves, so it
+ * cannot be awaited before looking for new enrolments. The live-session map is
+ * also the single-connection guard — an account already running or queued for
+ * admission is never started again.
  */
 export async function collectAll(
   ports: CollectorPorts,
   options: CollectorOptions,
+  collect: AccountCollector = collectAccount,
 ): Promise<void> {
-  // Every account, not only the ones a cron would consider due: the cutoff that
-  // makes the cron stand aside would otherwise hide exactly the accounts this
-  // process exists to serve.
-  const accounts = await ports.store.dueAccounts(options.maxAccounts, Number.MAX_SAFE_INTEGER);
-  // Distinct from the process's own "collector starting": this is the point at
-  // which the account set is known, which is what a log reader needs.
-  ports.log("info", "collecting accounts", { accounts: accounts.length });
+  const sessions = new Map<string, Promise<void>>();
+  const queuedIds = new Set<string>();
+  const admissionQueue: Account[] = [];
+  const localStop = Promise.withResolvers<void>();
+  let halting = false;
+  let admission: Promise<void> | null = null;
+  const sessionPorts: CollectorPorts = {
+    ...ports,
+    stopping: () => halting || ports.stopping(),
+    stopped: Promise.race([ports.stopped, localStop.promise]),
+  };
 
-  await Promise.all(accounts.map((account) => collectAccount(account, ports)));
-  ports.log("info", "finished collecting", { accounts: accounts.length });
+  const startSession = (account: Account): void => {
+    let running: Promise<void>;
+    running = collect(account, sessionPorts)
+      .catch(() => {
+        // The account loop normally contains its own operational failures. A
+        // truly unexpected one is isolated here so unrelated sessions survive.
+        ports.log("error", "an account collection session stopped unexpectedly");
+      })
+      .finally(() => {
+        if (sessions.get(account.id) === running) sessions.delete(account.id);
+      });
+    sessions.set(account.id, running);
+  };
+
+  const startAdmission = (): void => {
+    if (admission !== null || halting || ports.stopping()) return;
+    admission = (async () => {
+      let first = true;
+      while (admissionQueue.length > 0 && !halting && !ports.stopping()) {
+        if (
+          !first &&
+          (await waitOrStop(
+            sessionPorts,
+            options.accountStartStaggerMs ?? ACCOUNT_START_STAGGER_MS,
+          ))
+        ) {
+          return;
+        }
+        first = false;
+        if (halting || ports.stopping()) return;
+
+        const account = admissionQueue.shift();
+        if (account === undefined) return;
+        queuedIds.delete(account.id);
+        if (!sessions.has(account.id)) startSession(account);
+      }
+    })().finally(() => {
+      admission = null;
+      if (admissionQueue.length > 0) startAdmission();
+    });
+  };
+
+  try {
+    while (!ports.stopping()) {
+      // Every account, not only the ones a cron would consider due: the cutoff
+      // that makes the cron stand aside would otherwise hide exactly the
+      // accounts this process exists to serve. `dueAccounts` rotates its window
+      // by advancing `last_serviced_at`, so only read the remaining headroom or
+      // successive rounds would grow past this instance's configured ceiling.
+      const room = options.maxAccounts - sessions.size - admissionQueue.length;
+      const accounts =
+        room <= 0
+          ? []
+          : await ports.store.dueAccounts(room, Number.MAX_SAFE_INTEGER);
+      for (const account of accounts) {
+        if (sessions.has(account.id) || queuedIds.has(account.id)) continue;
+        queuedIds.add(account.id);
+        admissionQueue.push(account);
+      }
+      startAdmission();
+      ports.log("info", "discovered accounts", {
+        accounts: accounts.length,
+        active: sessions.size,
+        queued: admissionQueue.length,
+      });
+
+      if (await waitOrStop(ports, options.rediscoverMs)) break;
+    }
+  } finally {
+    // A database/discovery failure must also close already-live sessions before
+    // the lease is released. On an ordinary stop this resolves the same signal
+    // the process already supplied and is harmless.
+    halting = true;
+    localStop.resolve();
+    admissionQueue.length = 0;
+    queuedIds.clear();
+    const closing = sessions.size;
+    await admission;
+    await Promise.allSettled([...sessions.values()]);
+    ports.log("info", "finished collecting", { accounts: closing });
+  }
 }
 
 /** Exponential with full jitter, so restarts do not synchronise into a burst. */
@@ -210,6 +309,13 @@ export function backoffMs(failures: number, random: () => number): number {
 }
 
 async function sleepOrStop(ports: CollectorPorts, ms: number): Promise<boolean> {
-  await ports.sleep(ms);
-  return ports.stopping();
+  return waitOrStop(ports, ms);
+}
+
+async function waitOrStop(ports: CollectorPorts, ms: number): Promise<boolean> {
+  if (ports.stopping()) return true;
+  return Promise.race([
+    ports.sleep(ms).then(() => ports.stopping()),
+    ports.stopped.then(() => true),
+  ]);
 }

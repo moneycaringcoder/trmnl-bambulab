@@ -88,9 +88,13 @@ function controllableTimers(): Timers & {
   fireRepeats(): void;
   fireOnce(): void;
   onceArmed(): boolean;
+  onceCalls(): number;
+  lastOnceMs(): number | null;
 } {
   const repeats: (() => void)[] = [];
   let once: (() => void) | null = null;
+  let onceCount = 0;
+  let lastDelay: number | null = null;
   return {
     repeat(_everyMs, run) {
       repeats.push(run);
@@ -99,20 +103,30 @@ function controllableTimers(): Timers & {
         if (at >= 0) repeats.splice(at, 1);
       };
     },
-    once(_afterMs, run) {
+    once(afterMs, run) {
+      onceCount += 1;
+      lastDelay = afterMs;
       once = run;
       return () => {
-        once = null;
+        if (once === run) once = null;
       };
     },
     fireRepeats() {
       for (const run of [...repeats]) run();
     },
     fireOnce() {
-      once?.();
+      const run = once;
+      once = null;
+      run?.();
     },
     onceArmed() {
       return once !== null;
+    },
+    onceCalls() {
+      return onceCount;
+    },
+    lastOnceMs() {
+      return lastDelay;
     },
   };
 }
@@ -246,6 +260,52 @@ describe("a successful session", () => {
 
     expect(await end).toEqual({ reason: "closed-by-caller" });
     expect(broker.closed).toBe(true);
+  });
+
+  it("ends a silent subscribed session so its caller can reconnect", async () => {
+    const timers = controllableTimers();
+    const broker = new FakeBroker([CONNACK_OK, SUBACK_OK], true);
+    const subscribed = Promise.withResolvers<void>();
+    const session = new MqttSession(broker, {
+      ...CONNECT_OPTIONS,
+      keepAliveSeconds: 10,
+      timers,
+      onReport: () => undefined,
+      onSubscribed: subscribed.resolve,
+    });
+
+    const end = session.run();
+    await subscribed.promise;
+    expect(timers.onceArmed()).toBe(true);
+    expect(timers.lastOnceMs()).toBe(15_000);
+    timers.fireOnce();
+
+    expect(await end).toEqual({
+      reason: "failed",
+      detail: "the subscribed broker session became silent",
+    });
+    expect(broker.closed).toBe(true);
+  });
+
+  it("resets the inbound-idle deadline when a packet arrives", async () => {
+    const timers = controllableTimers();
+    const broker = new FakeBroker(
+      [CONNACK_OK, SUBACK_OK, report('{"print":{"mc_percent":42}}')],
+      true,
+    );
+    let callsAtReport = 0;
+    const session = new MqttSession(broker, {
+      ...CONNECT_OPTIONS,
+      timers,
+      onReport: () => {
+        callsAtReport = timers.onceCalls();
+        void session.stop();
+      },
+    });
+
+    await session.run();
+    // Handshake, initial subscribed watchdog, then the report resetting it.
+    expect(callsAtReport).toBe(3);
   });
 });
 

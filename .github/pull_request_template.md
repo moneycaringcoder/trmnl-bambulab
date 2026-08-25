@@ -27,7 +27,7 @@ builds" is not verification.
 
 - [ ] `scripts/secret-scan.sh --tree` is clean, and I did not use `--no-verify`.
 - [ ] Nothing in this diff contains a real serial, address, access code, token, account identifier, or webhook URL.
-- [ ] `pnpm typecheck` and `pnpm test` pass in `bridge/`.
+- [ ] Typechecks and tests pass in every affected package; a `bridge/src` change was checked in all three.
 - [ ] Tests were added or updated for the behavior this changes.
 - [ ] Monitoring-only boundary respected: no MQTT publish that controls a printer, in any code path, behind any flag.
 - [ ] TLS verification is still mandatory: no `insecure` option, no plaintext fallback, no relaxed certificate or identity check.

@@ -7,30 +7,36 @@ word or percentage, remaining time, and a high-contrast alert marker.
   {% for printer in printers %}
     <div class="item">
       <div class="content">
-        {% if printer.alert %}<span class="value value--xsmall">! ALERT</span>{% endif %}
-
+        {% assign unreadable = false %}
         {% if printer.stale or printer.state == "offline" or printer.state == "unknown" %}
+          {% assign unreadable = true %}
+        {% endif %}
+        {% if printer.alert and unreadable == false %}<span class="value value--xsmall">! ALERT</span>{% endif %}
+
+        {% if printer.stale %}
           <span class="value value--base">Reading old</span>
-          <span class="label">{% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}</span>
+          <span class="label">{% if printer.name %}{{ printer.name | escape }}{% else %}Printer{% endif %}</span>
+        {% elsif printer.state == "offline" %}
+          <span class="value value--base">Offline</span>
+          <span class="label">{% if printer.name %}{{ printer.name | escape }}{% else %}Printer{% endif %}</span>
+        {% elsif printer.state == "unknown" %}
+          <span class="value value--base">Unknown</span>
+          <span class="label">{% if printer.name %}{{ printer.name | escape }}{% else %}Printer{% endif %}</span>
         {% elsif printer.state == "idle" %}
           <span class="value value--base">Ready</span>
-          {% if printers.size < 3 %}
-            <span class="label">{% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}</span>
-          {% endif %}
+          <span class="label">{% if printer.name %}{{ printer.name | escape }}{% else %}Printer{% endif %}</span>
         {% else %}
           {% if printer.progress %}
             {% if printers.size == 3 %}
-              <span class="value value--base value--tnums">{{ printer.progress }}%</span>
+              <span class="value value--base value--tnums">{{ printer.progress | escape }}%</span>
             {% else %}
-              <span class="value value--large value--tnums">{{ printer.progress }}%</span>
+              <span class="value value--large value--tnums">{{ printer.progress | escape }}%</span>
             {% endif %}
           {% else %}
-            <span class="value value--base">{{ printer.state | capitalize }}</span>
+            <span class="value value--base">{{ printer.state | capitalize | escape }}</span>
           {% endif %}
-          {% if printers.size < 3 %}
-            <span class="label">{% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}</span>
-          {% endif %}
-          {% if printer.remaining %}<span class="description">{{ printer.remaining }} left</span>{% endif %}
+          <span class="label">{% if printer.name %}{{ printer.name | escape }}{% else %}Printer{% endif %}</span>
+          {% if printer.remaining %}<span class="description">{{ printer.remaining | escape }} left</span>{% endif %}
         {% endif %}
       </div>
     </div>

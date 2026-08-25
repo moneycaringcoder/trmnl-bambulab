@@ -107,3 +107,28 @@ worth knowing before restructuring anything:
 Type sizes are chosen against the height each block actually gets: about 430px
 of content once the title bar is out. The headline is 220px for one printer,
 74px for two and 58px for three.
+
+## What each tier can actually show
+
+Confirmed by rendering both payload shapes, not by reasoning about them.
+
+| | Self-hosted | Hosted |
+| --- | --- | --- |
+| Printer name | yes | yes |
+| Idle or printing | yes | yes |
+| Progress percentage and rail | yes | no |
+| Time remaining | yes | no |
+| Layer and layer count | yes | no |
+| Nozzle and bed temperature | yes | no |
+| Filament | yes | no |
+
+The hosted column is short because Bambu's HTTP interface does not carry those
+fields; they come over MQTT, which the bridge subscribes to and the Worker does
+not. See `docs/DECISIONS.md` D3.
+
+The views are written so an absent field leaves nothing behind rather than
+rendering a zero, which is what makes one set of templates serve both tiers. Two
+redundancies that only showed up on real data have been removed: the state was
+printed twice whenever there was no percentage to headline, which is every hosted
+screen, and Bambu's stage for a running print is often the word "Printing", which
+is the state as well.

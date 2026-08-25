@@ -21,6 +21,15 @@ Legend for the confidence column:
 
 ## What the first real sign-in established
 
+A second real sign-in, on 2026-08-25, settled the one thing the first left open.
+**A code can be requested with an email address alone.** `POST
+/v1/user-service/user/sendemail/code` with `{ email, type: "codeLogin" }` sends the
+code without any prior password attempt, and `POST /v1/user-service/user/login` with
+`{ account, code }` then returns a token. The whole hosted enrolment ran on that
+path: code requested, code accepted, printers listed, screen key issued. Confidence
+**confirmed**.
+
+
 A global-region account, signed in with an email and password, answered with a
 verification code by email, and the code was accepted. Two printers came back
 from the device list, both named and both reported online.

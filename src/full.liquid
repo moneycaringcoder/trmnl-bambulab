@@ -34,6 +34,18 @@ rather than an empty one.
       {% assign unreadable = true %}
     {% endif %}
 
+    {% comment %}
+      The headline is a percentage only when there is progress to show. Without
+      one it is the state itself, and repeating that state in the label below
+      produced "Printing / Name - Printing" - which is what the hosted tier
+      always looks like, because HTTP carries no progress. So the label names
+      the state only when the headline is a number.
+    {% endcomment %}
+    {% assign headline_is_number = false %}
+    {% if unreadable == false and printer.state != "idle" and printer.progress %}
+      {% assign headline_is_number = true %}
+    {% endif %}
+
     <div class="list">
       <div class="item">
         <div class="content">
@@ -54,13 +66,22 @@ rather than an empty one.
 
           <span class="label">
             {% if printer.name %}{{ printer.name }}{% else %}Printer {{ forloop.index }}{% endif %}
-            &middot;
             {% if printer.stale %}
-              reading is old
-            {% else %}
-              {{ printer.state | capitalize }}
+              &middot; reading is old
+            {% elsif headline_is_number %}
+              &middot; {{ printer.state | capitalize }}
             {% endif %}
-            {% if printer.stage %} &middot; {{ printer.stage }}{% endif %}
+            {% comment %}
+              Bambu's stage for a running print is frequently the word
+              "Printing", which is the state as well, so the label read
+              "Name - Printing - Printing" on real data. A stage only earns its
+              place when it says something the state does not.
+            {% endcomment %}
+            {% assign state_word = printer.state | downcase %}
+            {% assign stage_word = printer.stage | downcase %}
+            {% if printer.stage and stage_word != state_word %}
+              &middot; {{ printer.stage }}
+            {% endif %}
             {% if printer.job %} &middot; {{ printer.job }}{% endif %}
             {% comment %}
               At three printers the figures move onto this line, because the

@@ -25,7 +25,14 @@ beside every rail and drops temperature detail before print essentials.
             <span class="value value--base">{{ printer.state | capitalize }}</span>
           {% endif %}
           <span class="label">{% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}</span>
-          <span class="description">{{ printer.state | capitalize }}</span>
+          {% comment %}
+            Only when the headline is a percentage. Without progress the headline
+            is the state itself, and repeating it here read as "Printing" twice -
+            which is every hosted screen, because HTTP carries no progress.
+          {% endcomment %}
+          {% if printer.progress %}
+            <span class="description">{{ printer.state | capitalize }}</span>
+          {% endif %}
           {% render "progress_rail", progress: printer.progress, size: "progress-bar--small" %}
           {% if printer.remaining %}<span class="description">{{ printer.remaining }} remaining</span>{% endif %}
           {% if printer.layer %}

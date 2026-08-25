@@ -33,7 +33,12 @@ name and print essentials; absent metrics never reserve a blank row.
             <span class="value value--base">{{ printer.state | capitalize }}</span>
           {% endif %}
           <span class="label">{% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}</span>
-          <span class="description">{{ printer.state | capitalize }}</span>
+          {% comment %}
+            Only when the headline is a percentage; see half_horizontal.liquid.
+          {% endcomment %}
+          {% if printer.progress %}
+            <span class="description">{{ printer.state | capitalize }}</span>
+          {% endif %}
           {% if printers.size == 3 %}
             {% render "progress_rail", progress: printer.progress, size: "progress-bar--xsmall" %}
           {% else %}

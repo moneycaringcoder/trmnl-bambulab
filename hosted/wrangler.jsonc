@@ -28,7 +28,11 @@
     "directory": "./public",
     "html_handling": "auto-trailing-slash",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/v1/*", "/healthz"]
+    // `/__scheduled` is Wrangler's local cron trigger. It is listed because the
+    // asset server otherwise answers it with the page, which makes the cron
+    // untestable in dev. No such route exists in production, where the Worker
+    // runs first and answers 404 like any other unknown path.
+    "run_worker_first": ["/v1/*", "/healthz", "/__scheduled"]
   },
 
   // Workers Logs indexes the one-object-per-line events from log.ts.

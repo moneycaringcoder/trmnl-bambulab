@@ -349,10 +349,12 @@ a future logging change to leak. The self-hosted bridge keeps its password entry
 point, because it runs on the user's own machine and one request beats waiting
 for an email.
 
-**Unverified.** The owner's real sign-in reached the code endpoint only *after* a
-password attempt returned `verifyCode`. Whether Bambu will email a code with no
-prior password request is untested against a real account. If it refuses, the
-hosted flow needs the password after all — a product decision, not a bug.
+**Confirmed against a real account, 2026-08-25.** This was the last unverified
+assumption in the hosted design, and it held: a sign-in that supplied only an
+email address received a code, the code was accepted, and the printers on that
+account were listed. No password was requested at any point. The hosted tier
+therefore never needs one, and the fallback that would have been required if
+Bambu had refused is not needed.
 
 ## D15. Login state lives in the browser, not on the server
 

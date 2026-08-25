@@ -1,5 +1,9 @@
 # trmnl-bambulab
 
+[![CI](https://github.com/moneycaringcoder/trmnl-bambulab/actions/workflows/ci.yml/badge.svg)](https://github.com/moneycaringcoder/trmnl-bambulab/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-6a6a6a)](LICENSE)
+[![TRMNL](https://img.shields.io/badge/TRMNL-plugin-f8654b)](https://usetrmnl.com)
+
 See your Bambu Lab printers on a [TRMNL](https://usetrmnl.com) e-paper display.
 
 Sign in with your Bambu account, pick which printers to show, and the display
@@ -30,6 +34,40 @@ temperature; those arrive over MQTT, which wants a connection held open. The
 self-hosted bridge holds one. The hosted tier holds one only while its
 collector component is running, and degrades to name-and-state — never to a
 blank screen — when it is not.
+
+```mermaid
+flowchart LR
+  subgraph bambu["Bambu Cloud"]
+    http["HTTP API"]
+    mqtt["MQTT broker"]
+  end
+
+  subgraph hosted["Hosted tier"]
+    worker["Cloudflare Worker<br/>cron + markup"]
+    db[("Neon Postgres")]
+    collector["Collector<br/>(optional, live numbers)"]
+  end
+
+  bridge["Self-hosted bridge<br/>(your machine)"]
+  trmnl["TRMNL"]
+  display["e-paper display"]
+
+  http -->|"poll, every 5 min"| worker
+  mqtt -->|"subscribe only"| collector
+  worker --> db
+  collector --> db
+  db --> worker
+  worker -->|"rendered markup"| trmnl
+
+  http -->|"poll"| bridge
+  mqtt -->|"subscribe only"| bridge
+  bridge -->|"webhook push"| trmnl
+
+  trmnl --> display
+```
+
+Nothing flows toward a printer on either path — both arrows out of Bambu
+Cloud are reads.
 
 | | Hosted | Self-hosted |
 |---|---|---|

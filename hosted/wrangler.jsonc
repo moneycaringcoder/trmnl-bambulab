@@ -17,6 +17,21 @@
     "crons": ["*/5 * * * *"]
   },
 
+  // Both stated rather than left to default, because the default for each is
+  // "on" and Wrangler warns about exactly that on every deploy.
+  //
+  // `workers_dev` is the URL the setup page and TRMNL actually use, so it stays.
+  //
+  // `preview_urls` is off. It would publish a second hostname for every version
+  // ever uploaded, each one serving this Worker's whole surface: the enrolment
+  // API and `GET /v1/screen`. A screen key would work against all of them, and a
+  // stale version would keep answering with whatever code it shipped with. The
+  // rate ceilings still apply, and sign-in would fail there because those hosts
+  // are not registered as trusted origins — but none of that is a reason to
+  // publish the surface in the first place.
+  "workers_dev": true,
+  "preview_urls": false,
+
   // The setup page. Static, because it is one HTML file and giving it a build
   // step would be the only build step in this package.
   //

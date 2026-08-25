@@ -49,23 +49,58 @@ The Worker expects:
 
 - `DATABASE_URL`: a Worker secret containing the application connection string.
 - `TOKEN_KEY_K1`: a Worker secret containing a base64 AES-256 key.
+- `NEON_AUTH_BASE_URL`: a Worker secret containing the identity provider's base
+  URL. Not sensitive — the browser talks to it too — but it names infrastructure,
+  so it is set rather than committed. It must not also appear in `vars`: a var
+  and a secret of the same name are one binding, and a deploy rewrites vars.
 - `TOKEN_KEY_CURRENT_ID`: the non-secret key id `k1` in Worker configuration.
 
-Set the database connection through Wrangler's prompt:
+All three are listed in `secrets.required` in `wrangler.jsonc`, so a deploy that
+is missing one fails rather than shipping a Worker whose sign-in answers 404 or
+whose cron cannot open a single stored token.
+
+### The first deploy
+
+`wrangler secret put` cannot be used before the Worker exists — there is nothing
+to attach a secret to, and it fails saying so. The first deploy therefore supplies
+them from a file, which is the same format `.dev.vars` already uses:
+
+```sh
+pnpm exec wrangler deploy --secrets-file .dev.vars
+```
+
+Keep that file out of Git; `.gitignore` already covers `.dev.vars*`.
+
+### Afterwards
+
+Once the Worker exists, set or replace one secret at a time through Wrangler's
+prompt, which keeps the value out of shell history and process arguments:
 
 ```sh
 pnpm exec wrangler secret put DATABASE_URL
 ```
 
-Generate a key with Web Crypto and send it directly to Wrangler without writing it to a file or placing it in a process argument:
+Generate a key with Web Crypto and send it directly to Wrangler without writing
+it to a file or placing it in a process argument:
 
 ```sh
 pnpm --silent hosted:key | pnpm exec wrangler secret put TOKEN_KEY_K1
 ```
 
-`pnpm hosted:key` prints a fresh key when an operator needs to transfer it through an approved secret manager. Treat that output as a production credential: do not paste it into chat, tickets, logs, shell arguments, environment examples, or Git. Cloudflare Worker secrets are the key-management boundary; Neon holds only the key id, nonce, and authenticated ciphertext.
+`pnpm hosted:key` prints a fresh key when an operator needs to transfer it
+through an approved secret manager. Treat that output as a production credential:
+do not paste it into chat, tickets, logs, shell arguments, environment examples,
+or Git. Cloudflare Worker secrets are the key-management boundary; Neon holds
+only the key id, nonce, and authenticated ciphertext.
 
-Set `TOKEN_KEY_CURRENT_ID` to `k1` in the Worker's non-secret variables. The key id is intentionally meaningless and is safe to store with each ciphertext.
+**A replacement `TOKEN_KEY_K1` is not a recoverable mistake.** Every stored token
+is sealed with the key that was current when it was written, so installing a
+different one under the same id does not fail loudly — it silently orphans every
+existing enrolment, and no later deploy undoes it. Rotation exists for this and
+is additive; see below.
+
+Set `TOKEN_KEY_CURRENT_ID` to `k1` in the Worker's non-secret variables. The key
+id is intentionally meaningless and is safe to store with each ciphertext.
 
 ## Rotate an encryption key
 

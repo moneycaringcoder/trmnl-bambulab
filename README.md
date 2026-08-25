@@ -19,14 +19,15 @@ the MQTT client it uses is structurally unable to publish.
 
 ## Two ways to run it
 
-**Hosted.** Install the TRMNL plugin, sign in to Bambu with an emailed code,
-pick printers, done. You install nothing, create no account, and never handle a
-credential — TRMNL's install handshake is the sign-in, and your Bambu password
-never exists here because Bambu's emailed code is the whole flow.
+**Hosted.** Marketplace installation is awaiting TRMNL review. Once it is
+listed, install the plugin, enter the code Bambu emails you, and pick printers.
+You install nothing and create no separate account. We never receive your
+Bambu password; the resulting cloud token is encrypted before it reaches the
+database.
 
-**Self-hosted.** Run the bridge on your own machine. The hosted backend is
-never involved, and nothing leaves your machine except the push to your own
-TRMNL plugin.
+**Self-hosted.** Run the bridge on your own machine. It talks directly to
+Bambu Cloud and pushes a normalized snapshot to your own TRMNL webhook; our
+hosted backend is never involved.
 
 The two tiers do not always show the same amount, and the difference is not a
 bug. Bambu's HTTP interface carries no progress, layer count, time remaining or
@@ -71,8 +72,8 @@ Cloud are reads.
 
 | | Hosted | Self-hosted |
 |---|---|---|
-| You install | nothing | the bridge (Node 22+) |
-| Sign-in | TRMNL install handshake | `pnpm setup` on your machine |
+| You install | nothing | the bridge (Node 22.18+) |
+| Sign-in | emailed Bambu code | email and password, or an existing token, on your machine |
 | Progress, layers, time, temps | while the collector runs | always |
 | Your Bambu token lives | encrypted in our database | on your machine |
 
@@ -91,15 +92,18 @@ mashups:
 ```sh
 git clone https://github.com/moneycaringcoder/trmnl-bambulab
 cd trmnl-bambulab
-git config core.hooksPath .githooks   # enable the secret gate
-cd bridge && pnpm install
+corepack enable
+cd bridge
+pnpm install --frozen-lockfile
 pnpm setup
 ```
 
-`pnpm setup` signs you in — Bambu emails you a code; there is no password
-prompt — lists the printers on your account, and asks which ones to show. You
-can finish without a TRMNL webhook URL and add it later with
-`pnpm setup webhook`. `pnpm start` then runs the bridge until you stop it.
+`pnpm setup` lets you paste an existing Bambu access token or sign in with
+your email and password. A password is sent to Bambu Cloud once and discarded;
+Bambu may then email you a verification code. The wizard lists the printers on
+your account and asks which ones to show. You can finish without a TRMNL
+webhook URL and add it later with `pnpm setup webhook`. `pnpm start` then runs
+the bridge until you stop it.
 
 | Command | Does |
 |---|---|
@@ -109,17 +113,17 @@ can finish without a TRMNL webhook URL and add it later with
 | `pnpm setup webhook` | Set the TRMNL webhook URL |
 | `pnpm start` | Run the bridge |
 
-Your Bambu password is never asked for, and the verification code is used for a
-single request and never written to disk. Only the resulting access token is
-stored, in a file the secret gate refuses to commit.
+The password and any verification code are used only for their login requests
+and never written to disk. Only the resulting access token is stored, in a file
+the secret gate refuses to commit.
 
 ## Running your own hosted tier
 
 Everything the hosted tier needs is in this repository: a Cloudflare Worker, a
 Neon Postgres schema, and an optional collector container for live telemetry.
-`hosted/README.md` is the deployment guide and `docs/COLLECTOR.md` the
-collector's design and operations guide. It registers with TRMNL as a
-third-party plugin — `docs/TRMNL-PLUGIN.md` documents the contract.
+See the [hosted deployment guide](hosted/README.md), the
+[collector operations guide](docs/COLLECTOR.md), and the
+[TRMNL plugin contract](docs/TRMNL-PLUGIN.md).
 
 ## How it is built
 
@@ -141,8 +145,8 @@ could guess, it refuses instead — that is what the honesty rules below are.
 - A metric that is absent is left blank, never shown as zero.
 - A stale reading says it is old instead of posing as current.
 - An unknown printer state is shown as unknown, not guessed into "idle".
-- Job names can reveal what you are printing, so exporting them is opt-in and
-  off by default.
+- Job names can reveal what you are printing. The hosted tier never exports
+  them; self-hosted export is opt-in and off by default.
 
 ## Contributing
 

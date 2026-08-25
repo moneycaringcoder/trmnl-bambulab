@@ -372,9 +372,10 @@ Credit is given in the advisory unless you prefer otherwise.
   not modelled. The exclusion stops at the collector host: local access to
   *that* machine reaches other people's credentials, which is in scope and is
   covered under "A compromised collector host".
-- **Rate limiting and the payload size ceiling.** These exist so the bridge is
-  a good citizen of the TRMNL API and so renders stay correct. They are
-  correctness constraints, not security boundaries.
+- **Self-hosted push cadence and payload size.** The bridge's TRMNL webhook
+  spacing and payload ceiling keep renders valid and respect TRMNL's limits;
+  they are correctness constraints, not security boundaries. This exclusion
+  does not cover the hosted tier's address and enrolment abuse controls.
 - **Vulnerabilities that require a user to paste a credential into a public
   place.** That is what the redaction rules throughout this repository exist to
   prevent.

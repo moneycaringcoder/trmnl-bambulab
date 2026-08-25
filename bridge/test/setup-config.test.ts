@@ -82,7 +82,7 @@ describe("validateConfig — shape", () => {
 
 describe("validateConfig — cloud fields", () => {
   // An opaque token is a token. Guessing at the format and refusing one the
-  // cloud just issued would be worse than not checking. See docs/DECISIONS.md D9.
+  // cloud just issued would be worse than not checking.
   it("accepts an opaque token that is not JWT-shaped", () => {
     const config = accept({ cloud: cloud({ accessToken: "an-opaque-token" }), trmnl: trmnl() });
     expect(config.cloud.accessToken).toBe("an-opaque-token");

@@ -1,5 +1,5 @@
 # TRMNL sync owns this file. With no id, `trmnlp push` creates a NEW plugin.
-# Contributors must never commit an `id:`; the owner's sync re-adds theirs locally.
+# Contributors must never commit an `id:`; our TRMNL sync re-adds it locally.
 ---
 strategy: webhook
 no_screen_padding: 'no'

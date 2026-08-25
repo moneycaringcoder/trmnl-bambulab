@@ -6,7 +6,7 @@
  * of the product: on its own it gives which printers exist, whether they are
  * online, what they are printing and how far along it is. Layer counts,
  * remaining time and temperatures are not available over HTTP at all and come
- * from the MQTT path instead. See `docs/DECISIONS.md` D3.
+ * from the MQTT path instead.
  *
  * The poll interval is the push cadence, because there is no point learning
  * something more often than it can be shown. See D4.

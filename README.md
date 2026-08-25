@@ -36,7 +36,7 @@ blank screen — when it is not.
 | You install | nothing | the bridge (Node 22+) |
 | Sign-in | TRMNL install handshake | `pnpm setup` on your machine |
 | Progress, layers, time, temps | while the collector runs | always |
-| Your Bambu token lives | encrypted in the operator's database | on your machine |
+| Your Bambu token lives | encrypted in our database | on your machine |
 
 ## The four layouts
 
@@ -91,14 +91,12 @@ third-party plugin — `docs/TRMNL-PLUGIN.md` documents the contract.
 | `src/` | The display itself: shared markup and the four Liquid layouts. One design source for both tiers |
 | `hosted/` | The hosted tier: Cloudflare Worker, TRMNL marketplace protocol, Neon schema, token encryption, server-side Liquid rendering |
 | `collector/` | The always-on process that holds Bambu MQTT for hosted accounts, so the hosted display shows the same numbers a self-hosted one does |
-| `docs/` | Design decisions, protocol notes, plugin contract, sources |
+| `docs/` | The plugin contract, the collector guide, template documentation |
 | `scripts/` | The secret scanner the pre-commit hook runs |
 
-Design decisions are written down with their reasoning in
-[`docs/DECISIONS.md`](docs/DECISIONS.md), including the ones that were
-reversed. What is known about Bambu's unpublished cloud interface — learned
-from real accounts and community reverse-engineering — is in
-[`docs/BAMBU-PROTOCOL.md`](docs/BAMBU-PROTOCOL.md).
+Bambu publishes no supported cloud API, so everything here is built on
+reverse-engineered behaviour that can drift without notice. Where the display
+could guess, it refuses instead — that is what the honesty rules below are.
 
 ## Honesty rules the display follows
 

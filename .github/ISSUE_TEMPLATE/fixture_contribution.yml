@@ -83,7 +83,7 @@ body:
     attributes:
       label: Anything surprising in the data
       description: >
-        Unexpected field names, units that disagree with `docs/BAMBU-PROTOCOL.md`,
+        Unexpected field names, units that disagree with what the display shows,
         values that appear only on this firmware, fields that vanish between
         reports.
 

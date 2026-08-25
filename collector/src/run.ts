@@ -196,7 +196,7 @@ export async function collectAll(
   // process exists to serve.
   const accounts = await ports.store.dueAccounts(options.maxAccounts, Number.MAX_SAFE_INTEGER);
   // Distinct from the process's own "collector starting": this is the point at
-  // which the account set is known, which is what an operator wants to see.
+  // which the account set is known, which is what a log reader needs.
   ports.log("info", "collecting accounts", { accounts: accounts.length });
 
   await Promise.all(accounts.map((account) => collectAccount(account, ports)));

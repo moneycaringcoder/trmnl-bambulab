@@ -14,8 +14,8 @@ body:
         - **Weakening transport security.** No TLS bypass, no `insecure`
           option, no credential leaving the user's machine.
 
-        Everything else is open. Read `docs/DECISIONS.md` before proposing
-        something structural.
+        Everything else is open. Say what you want the display to show and
+        why; the maintainers will push back if it fights the constraints.
 
   - type: textarea
     id: problem

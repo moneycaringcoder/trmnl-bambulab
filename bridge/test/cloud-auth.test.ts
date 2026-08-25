@@ -145,7 +145,6 @@ describe("verification-code branch", () => {
 describe("two-factor branch", () => {
   // Bambu's authenticator endpoint has answered 403 missing_cookie since
   // 2026-08-01, so a two-factor account is routed to the emailed code instead.
-  // See docs/DECISIONS.md D8.
   it("asks Bambu to email a code instead of calling the two-factor endpoint", () => {
     const start = beginPasswordLogin(ACCOUNT, PASSWORD);
     const asked = advance(start.phase, {

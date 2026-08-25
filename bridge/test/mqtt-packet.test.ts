@@ -49,7 +49,7 @@ function publish(topic: string, body: string, qos = 0): Buffer {
 
 // The whole point of this module is that it cannot ask a printer to do
 // anything. If someone adds a publish encoder, this fails and they have to
-// argue with docs/DECISIONS.md D1 rather than with a reviewer's memory.
+// argue with this comment rather than with a reviewer's memory.
 describe("the read-only guarantee", () => {
   it("exports no way to encode an outbound publish", () => {
     const exported = Object.keys(packetModule);

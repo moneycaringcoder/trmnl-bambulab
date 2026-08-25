@@ -34,7 +34,7 @@ WORKDIR /app/collector
 USER node
 
 # Runtime state is only in Neon and logs go to stdout and stderr. No writable
-# directory is required, so operators can run this image with a read-only root
+# directory is required, so the image runs with a read-only root
 # filesystem. Secrets belong in the runtime environment, never in this image.
 # Nothing connects inward, so there is deliberately no EXPOSE instruction.
 CMD ["node", "src/index.ts"]

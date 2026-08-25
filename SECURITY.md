@@ -8,7 +8,7 @@ It runs in two ways. Self-hosted, the user runs the bridge on their own machine
 and our backend is never involved. Hosted, we run it, which means we hold the
 user's Bambu Cloud token on their behalf. The hosted tier's public surface is
 Cloudflare's, but its secrets are no longer confined to Cloudflare and Neon: an
-always-on *collector*, running on hardware the operator owns, holds the key that
+always-on *collector*, running on hardware we own, holds the key that
 opens those tokens. See "A compromised collector host" below.
 
 The security policy matters more here than in an average repository, because
@@ -136,10 +136,9 @@ Bambu sign-in uses an emailed code.
 The hosted tier now has a second machine, and it is not one of Cloudflare's.
 Bambu's HTTP interface carries no progress, layer, remaining time or
 temperature — those arrive over MQTT, and a Worker cron cannot hold a socket
-open — so an always-on *collector* runs in a container on hardware the operator
-owns, keeps one MQTT session per hosted account, and writes the same `screens`
-rows the cron writes. Its design is `docs/COLLECTOR.md`; the reasoning is D18
-in `docs/DECISIONS.md`.
+open — so an always-on *collector* runs in a container on our own hardware,
+keeps one MQTT session per hosted account, and writes the same `screens`
+rows the cron writes. Its design and operations guide is `docs/COLLECTOR.md`.
 
 To open a sealed token it needs the key that sealed it, which is the same
 `TOKEN_KEY_K1` material the Worker holds. So the exposure has to be said
@@ -167,9 +166,8 @@ in memory for the life of a session; nothing writes one to the box.
 
 **Physical access.** The Worker's copy of the key sits in Cloudflare's secret
 store. This copy sits on a machine somebody can pick up. Full-disk encryption on
-the host is therefore an obligation rather than a suggestion, and it is the
-operator's to discharge — nothing in this repository can check it, so treat it
-as unverified until the person running the box says otherwise. Be clear about
+the host is therefore an obligation rather than a suggestion, and it is ours
+to discharge — nothing in this repository can check it. Be clear about
 what it covers: a disk that is stolen or thrown away, not a powered-on machine
 with a shell available on it.
 
@@ -194,7 +192,7 @@ so does anyone on the host who can inspect the container's environment.
 Container isolation narrows the ways in. It does not make the host and the
 container two trust domains.
 
-**Log exposure.** Logs on a machine the operator runs are easier to reach than
+**Log exposure.** Logs on a machine we run are easier to reach than
 Cloudflare's: a shell, a backup, a log shipper, a screenshot pasted into a
 support thread. The property being relied on is that they hold nothing worth
 reaching. Every collector log line identifies an account only as `account_tag`,
@@ -261,8 +259,8 @@ rows go stale and the cron resumes, so every display degrades to the thin
 HTTP-only view of name and state. It never blanks.
 
 That is what makes switching the box off an available response rather than an
-outage: an operator who suspects the host is compromised can stop it and lose a
-tier of display fidelity instead of the service. Stopping it does not undo the
+outage: if we suspect the host is compromised, we stop it and lose a tier of
+display fidelity instead of the service. Stopping it does not undo the
 exposure — the recovery above is still every user's to do — but it costs nothing
 to do immediately. It is also why the collector must never replace the cron: a
 richer display that can disappear is a worse product than a thin one that

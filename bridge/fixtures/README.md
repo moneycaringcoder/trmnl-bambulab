@@ -12,7 +12,7 @@ and numeric ranges, because those are what the tests pin.
 | `cloud/` | Sanitized Bambu Cloud HTTP and cloud MQTT response shapes. |
 | `merged/` | Coordinator output used by the bridge tests and by `trmnlp` preview. |
 
-Name a fixture `*.synthetic.json` when it was hand-authored rather than
-captured, so a later hardware capture can replace it deliberately.
+Name a fixture `*.synthetic.json` when you hand-author it rather than capture
+it, so a later hardware capture can replace it deliberately.
 
-Run `scripts/secret-scan.sh --tree` before committing anything in this tree.
+From the repository root, run `scripts/secret-scan.sh --tree` before committing anything in this tree.

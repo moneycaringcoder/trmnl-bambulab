@@ -149,7 +149,7 @@ function maxAccounts(): number {
  * backend, a restart, a network drop — and an unhandled `error` event is an
  * uncaught exception. That killed the process with a raw driver stack trace
  * before the lease's own heartbeat could notice, which meant the deliberate
- * lost-lease path never ran and the operator got a dump instead of a reason.
+ * lost-lease path never ran and the logs got a stack dump instead of a reason.
  * Handling it lets the next heartbeat query fail normally, which is what
  * reports the loss. The driver's message is not logged: it can name a host.
  */
@@ -200,7 +200,7 @@ async function main(): Promise<number> {
     );
   });
 
-  // Names this instance in the operator's own logs. Not a secret and not an
+  // Names this instance in local logs. Not a secret and not an
   // identity: nothing authenticates with it.
   const instance = process.env.HOSTNAME?.trim() || `collector-${process.pid}`;
   const ceiling = maxAccounts();
@@ -256,7 +256,7 @@ const code = await main().catch((cause: unknown) => {
     return EX_CONFIG;
   }
   // The message could name a host or a connection string, so only the fact is
-  // logged and the detail is left to the operator's own environment.
+  // logged and the detail is left to the host environment.
   log("error", "the collector could not start");
   return 1;
 });

@@ -27,7 +27,7 @@ export const EX_CONFIG = 78;
 export const EX_LEASE_LOST = 1;
 
 export interface SuperviseOptions {
-  /** Names this instance in the operator's logs. Never a secret. */
+  /** Names this instance in local logs. Never a secret. */
   instance: string;
   maxAccounts: number;
   /** How long a standby waits before asking for the lease again. */

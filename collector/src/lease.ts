@@ -43,7 +43,7 @@ export interface LeaseConnection {
 }
 
 export interface LeaseOptions {
-  /** Names this instance, for the operator's benefit only. Never a secret. */
+  /** Names this instance, for log readability only. Never a secret. */
   instanceId: string;
   /** How often to confirm the lock is still ours. */
   heartbeatMs: number;

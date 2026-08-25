@@ -132,7 +132,7 @@ export async function importKeyring(
  *
  * `TOKEN_KEY_CURRENT_ID` is required rather than defaulted. It is deliberately
  * meaningless, so guessing it is cheap and wrong: a surface that guessed would
- * seal rows under a key id the operator never named, and rotation works by
+ * seal rows under a key id nobody had to name, and rotation works by
  * changing exactly this value.
  */
 export async function importKeyringFromEnv(env: Record<string, unknown>): Promise<Keyring> {
@@ -247,7 +247,7 @@ export async function sealToken(
  * Recovers a token, or throws.
  *
  * A wrong account id, a tampered ciphertext and a retired key all end here.
- * They are distinguished only as far as an operator needs: whether the key is
+ * They are distinguished only as far as diagnosis needs: whether the key is
  * missing is actionable, and everything else is deliberately one answer,
  * because telling an attacker which part of their forgery failed is a favour.
  *
@@ -351,8 +351,7 @@ export const SCREEN_KEY_LENGTH = 43;
  * anyway, being documented and visible to every key holder. Key *validity* is
  * not revealed by this check, and the endpoint answers one identical 404 to
  * every refusal a caller can provoke. The one exception is not caller-reachable:
- * a database fault after a key resolves surfaces as a 503, which see `D13` in
- * `docs/DECISIONS.md` for why that trade is taken deliberately.
+ * a database fault after a key resolves surfaces as a 503.
  */
 export function looksLikeScreenKey(value: string): boolean {
   return value.length === SCREEN_KEY_LENGTH && /^[A-Za-z0-9_-]+$/.test(value);
@@ -373,7 +372,7 @@ export async function screenKeyFingerprint(key: string): Promise<string> {
 }
 
 /**
- * Generates a key for an operator to paste into `wrangler secret put`.
+ * Generates a key to paste into `wrangler secret put`.
  *
  * Here rather than in a script so that the one place keys are made is the same
  * place they are used, and so nobody is tempted to reach for `Math.random`.

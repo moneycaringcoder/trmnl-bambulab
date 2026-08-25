@@ -15,7 +15,7 @@
  * There is no webhook URL anywhere in this file, and that is deliberate. TRMNL
  * fetches from the hosted tier rather than being pushed to, so we never receive
  * the URL that authorizes writing to someone's display, and therefore cannot
- * leak it. See `docs/DECISIONS.md` D11.
+ * leak it.
  */
 
 import type { SealedToken } from "./crypto.ts";
@@ -99,7 +99,7 @@ export interface Installation {
   userUuid: string | null;
   /** For deep-linking back to trmnl.com's own settings page. */
   pluginSettingId: number | null;
-  /** Null until the owner signs in to Bambu and picks printers. */
+  /** Null until the person who installed the plugin signs in to Bambu and picks printers. */
   accountId: string | null;
 }
 

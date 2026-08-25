@@ -6,9 +6,9 @@ payload and the four Liquid layouts, but installation and rendering differ.
 - **Hosted is a TRMNL third-party marketplace plugin.** TRMNL performs the
   install handshake, identifies each installation with its own access token, and
   asks the Worker for server-rendered markup.
-- **Self-hosted is a TRMNL Private Plugin using Webhook.** The bridge runs on the
-  operator's machine and pushes merge variables to that plugin's webhook URL.
-  TRMNL cannot initiate a request to a private machine, so the bridge has to make
+- **Self-hosted is a TRMNL Private Plugin using Webhook.** You run the bridge
+  on your machine, and it pushes merge variables to the plugin's webhook URL.
+  TRMNL cannot initiate a request to your private machine, so the bridge makes
   the outbound request.[2][3]
 
 ## Hosted marketplace contract
@@ -22,10 +22,10 @@ The Worker implements these routes:
 
 | Route | Caller | Purpose |
 | --- | --- | --- |
-| `GET /trmnl/install` | User's browser, redirected by TRMNL | Exchanges TRMNL's single-use install code for a per-installation access token, then opens setup with a short-lived management token. |
+| `GET /trmnl/install` | Your browser, redirected by TRMNL | Exchanges TRMNL's single-use install code for a per-installation access token, then opens setup with a short-lived management token. |
 | `POST /trmnl/installed` | TRMNL | Records the installation UUID and plugin-setting id from the authenticated success webhook. Names and email addresses in the webhook are deliberately discarded. |
 | `POST /trmnl/markup` | TRMNL | Authenticates the installation's Bearer token and returns HTML fragments for all four layouts. |
-| `GET /trmnl/manage` | User's browser, redirected by TRMNL | Resolves TRMNL's installation UUID and opens setup with a fresh short-lived management token. |
+| `GET /trmnl/manage` | Your browser, redirected by TRMNL | Resolves TRMNL's installation UUID and opens setup with a fresh short-lived management token. |
 | `POST /trmnl/uninstall` | TRMNL | Deletes the linked account, stored render, and installation. |
 
 TRMNL mints the installation access token and presents it on authenticated
@@ -49,9 +49,9 @@ Postgres. The markup route reads the latest stored payload and renders
 ```
 
 Rendering stored data rather than querying Bambu during a markup request keeps
-Bambu traffic on the service's five-minute schedule. A TRMNL refresh setting
-therefore cannot increase Bambu traffic or place cloud round trips inside the
-markup request timeout.[14]
+Bambu traffic on our five-minute schedule. The refresh schedule you configure
+in TRMNL therefore cannot increase Bambu traffic or place cloud round trips
+inside the markup request timeout.[14]
 
 ## Self-hosted webhook contract
 
@@ -122,7 +122,7 @@ Do not include:
 - camera images
 
 Job names can reveal private model names. Export is configurable and remains off
-unless the user enables it.
+unless you enable it.
 
 ## The four layouts
 
@@ -183,15 +183,6 @@ access or change plugins in your own TRMNL account.
 Review third-party `transform.*` files before previewing a cloned plugin because
 `trmnlp` may execute serverless transforms.[7]
 
-## Historical note: the abandoned polling design
-
-An earlier hosted design used a Private Plugin with Polling, an unlisted Recipe,
-and a screen key interpolated into an authorization header. That design was
-never the current marketplace contract. The marketplace conversion removed the
-polling endpoint, the Recipe, screen keys, and the separate hosted identity
-system. The self-hosted Webhook strategy was unaffected. The full reasoning is
-preserved as superseded decisions D11 through D13 and D16 through D17 in
-`DECISIONS.md`; D19 records the replacement.
 
 ## Sources
 

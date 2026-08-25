@@ -21,10 +21,10 @@ plugin and deliberately omits its remote id.
 
 ## Hosted installation
 
-Install the third-party plugin from the TRMNL marketplace. TRMNL redirects the
-browser through the install handshake, after which the setup page asks for a
-Bambu email code and lets the user choose printers. There is no credential to
-copy between services.
+Install the third-party plugin from the TRMNL marketplace. TRMNL redirects your
+browser through the install handshake, after which the setup page asks you for a
+Bambu email code and lets you choose printers. There is no credential to copy
+between services.
 
 ## Payload
 
@@ -110,7 +110,7 @@ the condition from the printer rows.
   animation. A numeric percentage sits beside its rail because a bar alone is
   hard to read at a glance.
 - **Nothing identifying.** No serial, device id, installation id, token, or
-  webhook URL. A job name appears only when the user enabled its export.
+  webhook URL. A job name appears only when you enable its export.
 
 ## Framework details
 

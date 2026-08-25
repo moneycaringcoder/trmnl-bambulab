@@ -30,8 +30,7 @@ export const cloudSchema = z.object({
   region: z.enum(REGION_IDS),
   /**
    * Opaque. There is no format check, because a token the cloud just issued
-   * must never be refused by a guess about its shape. See `docs/DECISIONS.md`
-   * D9. A whitespace check stays, because internal whitespace only ever means
+   * must never be refused by a guess about its shape. A whitespace check stays, because internal whitespace only ever means
    * a mangled copy-paste or a broken `.env` line.
    */
   accessToken: z

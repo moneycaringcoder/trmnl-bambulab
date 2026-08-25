@@ -4,8 +4,7 @@
  * The client knows nothing about how the bytes arrive. It is handed a
  * `ByteStream` and drives the protocol over it, which is what lets the same
  * code run on Node's `tls.connect` and on Cloudflare Workers' `connect()` from
- * `cloudflare:sockets`, where an ordinary MQTT library cannot go. See
- * `docs/DECISIONS.md` D2.
+ * `cloudflare:sockets`, where an ordinary MQTT library cannot go.
  *
  * What it does: connect, subscribe to a fixed set of report topics, hand each
  * report to a callback, answer the keep-alive clock, and close cleanly.

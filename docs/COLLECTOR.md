@@ -6,17 +6,16 @@ writes rendered screens into the same table the Worker's cron writes; when it
 is not running, the hosted tier continues at HTTP fidelity — name and state —
 and never blanks.
 
-This document is the design and the operations guide for the machine that runs
-it. Where a number is measured rather than estimated, it says so.
+This guide explains how the collector works and how you deploy and operate it.
+Measured numbers are identified as such.
 
 One requirement shapes most of what follows: the collector must close every
 live MQTT session the moment it loses its lease. The lock is gone by the time
 the heartbeat notices, so a standby may already be collecting the same
 accounts, and a holder that merely stopped *renewing* would leave two MQTT
 connections on one Bambu account — the condition Bambu bans for and the one
-the lease exists to prevent. The orchestration lives in
-`collector/src/supervise.ts`, and four tests fail if a session ever becomes
-unstoppable again.
+the lease exists to prevent. The orchestration in `collector/src/supervise.ts`
+keeps every session cancellable when the lease is lost.
 
 ## What it is for
 
@@ -77,34 +76,32 @@ not replace the cron.
 ## What it holds, and what that obliges
 
 The collector reads the `accounts` table and opens each sealed Bambu token, so
-**the machine running it holds the key that decrypts every hosted user's cloud
+**the machine running it holds the key that decrypts every hosted Bambu
 token**. That is the same obligation the Worker carries, moved onto hardware
-somebody owns, which adds a threat the Worker does not have: physical access.
+you control, which adds a threat the Worker does not have: physical access.
 
 Consequences, none of them optional:
 
 - The token key lives in the container's environment, never in an image, never in
   a snapshot, never in the repository.
 - Disk encryption on the host is not paperwork. A stolen or discarded disk with
-  the key on it is every user's Bambu account.
+  the key on it exposes every enrolled Bambu account.
 - Backups of the container inherit the key. Either exclude it or encrypt them.
 - `AGENTS.md` forbids logging a token, an email, a device id or a webhook URL.
-  The collector is subject to that in full, and it is the process most tempted to
-  break it, because printer telemetry is exactly what one wants to print while
-  debugging.
+  The collector is subject to that in full, and printer telemetry can be
+  especially tempting to log while debugging.
 - Read-only stays read-only. The MQTT client has no publish encoder and a test
   asserts none appears. The collector must not add one, for any reason,
   including `pushall`.
 
 ## Reuse
 
-The hosted modules run in plain Node without modification. This was checked
-rather than assumed: `hosted/src/store-neon.ts` and `hosted/src/crypto.ts` were
-imported into a Node 24 script, which read a real account and opened its real
-sealed token. `@neondatabase/serverless` speaks HTTP, and `crypto.subtle` is a
-global in modern Node, so neither module needs a Workers runtime.
+The hosted modules run in plain Node without modification.
+`@neondatabase/serverless` uses HTTP, and `crypto.subtle` is a global in modern
+Node, so `hosted/src/store-neon.ts` and `hosted/src/crypto.ts` do not require a
+Workers runtime.
 
-So the collector is a new entrypoint over parts that already exist:
+The collector is therefore an entrypoint over parts that already exist:
 
 | Part | Where it already lives |
 | --- | --- |
@@ -115,8 +112,8 @@ So the collector is a new entrypoint over parts that already exist:
 | Merge HTTP and MQTT views | `bridge/src/coordinator/` |
 | Build the payload | `bridge/src/push/payload.ts` |
 
-What is genuinely new: a loop that holds one MQTT session per account, and a
-leader lock so two collectors do not both hold one.
+The collector adds only the loop that holds one MQTT session per account and
+the leader lock that prevents two collectors from holding one.
 
 ## Sizing
 
@@ -144,9 +141,9 @@ constraint. In order, the real ones are:
    `ulimit -n` well above the account count.
 3. **Bambu's tolerance.** Their published note documents temporary bans for
    accounts exceeding 50 *concurrent* connections. That limit is per Bambu
-   account, so separate users do not stack against each other. Connection churn
-   is the thing to avoid, and the bridge already learned that lesson the hard
-   way: see `docs/DECISIONS.md`.
+   account, so separate accounts do not stack against each other. Avoid
+   connection churn because overlapping retries can create concurrent sessions
+   and trigger temporary bans.
 
 A GPU is of no use here. There is no inference or image work: the Worker renders
 the stored variables into HTML, and TRMNL turns that markup into an e-paper image.
@@ -168,7 +165,7 @@ DATABASE_URL=
 TOKEN_KEY_K1=
 TOKEN_KEY_CURRENT_ID=k1
 # Optional. There is no "no ceiling": omitting this line uses the default of
-# 200 accounts, so set it explicitly once more than that many people enrol.
+# 200 accounts, so set it explicitly when you need a higher limit.
 COLLECTOR_MAX_ACCOUNTS=1000
 ```
 
@@ -249,11 +246,11 @@ put a second MQTT connection on each Bambu account — which is what Bambu bans
 for. Exiting zero would be just as wrong in the other direction: the container
 would stop and stay stopped.
 
-A collector with nobody enrolled logs `collecting accounts` with a count of
-zero, keeps the lease, and looks again every five minutes. It does not exit,
-because a container that exits cleanly is not restarted by the `on-failure`
-policy above, and the next person to enrol would then get no live telemetry
-until somebody noticed.
+A collector with no enrolments logs `collecting accounts` with a count of zero,
+keeps the lease, and looks again every five minutes. It does not exit because a
+container that exits cleanly is not restarted by the `on-failure` policy above,
+and new enrolments would then get no live telemetry until the collector is
+restarted.
 
 A second instance is safe and provides a restart without a collection gap:
 start the replacement, wait for its standby line, then stop the old instance.
@@ -268,23 +265,24 @@ remains in place rather than being replaced by the collector.
 
 ## Failure modes
 
-| What fails | What a user sees |
+| Failure | Visible effect |
 | --- | --- |
 | One MQTT session drops | That printer's rich figures stop updating; the cron refreshes it at HTTP fidelity within five minutes |
 | The collector stops | Every hosted display falls back to HTTP fidelity |
 | The collector host stops | Same, because the cron is still running on Cloudflare |
 | Neon is unreachable | The markup request cannot load the stored payload and returns a service-unavailable response |
-| A user's token is refused | That account is flagged for re-authentication and skipped rather than retried into a ban |
+| A token is refused | That account is flagged for re-authentication and skipped rather than retried into a ban |
 
 Collector-specific failures degrade to the cron-only service. Neon is a shared
 dependency of both the writers and the markup route, so its failure is not
 masked by the collector fallback.
 
-## Before this carries anyone else's account
+## Before you accept external enrolments
 
-- Disk encryption on the host, and a backup story that does not copy the key.
+- Encrypt the host disk, and keep the key out of backups or encrypt those
+  backups.
 - Keep the "A compromised collector host" threat in `SECURITY.md` current. It
   records the obligations above rather than leaving them implicit.
-- Decide which installations may enrol before opening a self-operated hosted
-  tier. Collecting other people's telemetry on one operator's hardware is a
-  promise about uptime and privacy that should be made deliberately.
+- Decide which installations may enrol before opening a hosted tier. Accepting
+  enrolments beyond your own hardware creates an uptime and privacy commitment,
+  so make that choice deliberately.

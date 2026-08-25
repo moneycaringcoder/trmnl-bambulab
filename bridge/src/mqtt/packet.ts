@@ -9,7 +9,7 @@
  * **There is no PUBLISH encoder, and there must never be one.** This project
  * never sends a message to a printer, and the cheapest way to keep a promise
  * like that is to make breaking it require writing new code rather than
- * calling existing code. See `docs/DECISIONS.md` D1 and D2. The absence of
+ * calling existing code. The absence of
  * `encodePublish` is the enforcement mechanism, so if you find yourself adding
  * it, stop.
  *

@@ -1,40 +1,38 @@
 # Hosted tier
 
-The hosted tier is the install-nothing form of the plugin, as a TRMNL
+The hosted tier is the install-nothing form of the plugin, published as a TRMNL
 third-party plugin. A Cloudflare Worker wakes on a five-minute Cron Trigger,
 reads each selected printer through Bambu Cloud's HTTP interface, builds the
 same normalized payload as the self-hosted bridge, and stores it. TRMNL POSTs to
-`/trmnl/markup` with its per-installation Bearer token on whatever schedule the
-user chose, and the Worker renders the stored payload through the repository's
-own Liquid templates into the four layout fragments TRMNL wants. It never sends
-a request or command to a printer.
+`/trmnl/markup` on each installation's refresh schedule, using its
+per-installation Bearer token, and the Worker renders the stored payload through
+the repository's Liquid templates into the four layout fragments TRMNL expects.
+We never send a request or command to a printer.
 
-**Identity is TRMNL's.** Installing the plugin redirects the user here with a
-single-use code; the Worker exchanges it at `trmnl.com/oauth/token` for the
-installation's access token and keeps only a keyed HMAC tag of it. The setup
-page holds a short-lived management token signed with the same keyring. There is
-no sign-up, no password, no verification email and no screen key: the entire
-account system this replaced is gone, and `src/trmnl.ts` is what stands in its
-place. Bambu sign-in is unchanged and separate — it is the printer credential,
-an emailed code, never a password.
+**Identity is TRMNL's.** During installation, TRMNL redirects the browser here
+with a single-use code; the Worker exchanges it at `trmnl.com/oauth/token` for
+the installation's access token and keeps only a keyed HMAC tag of it. The
+setup page holds a short-lived management token signed with the same keyring.
+We have no separate account system, password, verification email, or screen
+key; `src/trmnl.ts` handles installation identity. Bambu sign-in is separate:
+it uses an emailed code, never a password.
 
 **The cron and collector write, the markup route reads**, and that separation is
-the design rather than an implementation detail. TRMNL asks on a schedule the
-user controls, so a route that read Bambu on demand would let one installation's
-refresh setting decide the service's Bambu request rate, put two cloud round
-trips inside TRMNL's request timeout, and let anyone holding a token generate
-Bambu load at will. Serving a stored render makes that load a function of the
-service's schedule alone.
+part of the service contract. A markup route that read Bambu on demand would
+let an installation's refresh setting decide our Bambu request rate, put two
+cloud round trips inside TRMNL's request timeout, and allow a stolen
+installation token to generate Bambu load. Serving a stored render keeps that
+load on our five-minute schedule.
 
-Because TRMNL pulls, **the service never receives a user's webhook URL** — the
-bearer credential that authorizes drawing on that display. It is not in the
-schema and cannot leak from here. See [`docs/DECISIONS.md` D19](../docs/DECISIONS.md#d19-identity-is-trmnls-the-hosted-tier-is-a-third-party-plugin).
+Because TRMNL pulls, **we never receive a webhook URL** — the bearer credential
+that authorizes drawing on a display. Keeping it out of our schema removes a
+display credential we would otherwise have to protect.
 
-Neon stores TRMNL installations (as token tags, never tokens), account
-configuration, sealed Bambu Cloud tokens, and the rendered screens. Tokens are
-encrypted with AES-256-GCM before they reach Postgres, with the account id
-authenticated as additional data so moving ciphertext between accounts yields
-nothing usable. Device ids are printer identifiers; they may never be logged.
+We store TRMNL installations in Neon as token tags, never tokens, along with
+account configuration, sealed Bambu Cloud tokens, and rendered screens. We
+encrypt tokens with AES-256-GCM before they reach Postgres and authenticate the
+account id as additional data, so moving ciphertext between accounts yields
+nothing usable. Device ids are printer identifiers; we never log them.
 
 ## Install and check
 
@@ -63,7 +61,8 @@ Node 22.18 or newer is required. Local tests use the complete in-memory store an
 
 An existing deployment that ran 0001 needs only 0002. It creates the
 installations table and drops the screen-key column, which is not reversible:
-every stored screen key stops resolving, which is the point of the conversion.
+every stored screen key stops resolving, so plan the installation migration
+before applying it.
 
 Use Neon's direct endpoint for migrations, not the hostname ending in `-pooler`. Keep the password in `.pgpass` or another credential manager rather than in the command line, shell history, or this repository. Test migrations on an isolated Neon branch before applying them to production.
 
@@ -113,11 +112,11 @@ it to a file or placing it in a process argument:
 pnpm --silent hosted:key | pnpm exec wrangler secret put TOKEN_KEY_K1
 ```
 
-`pnpm hosted:key` prints a fresh key when an operator needs to transfer it
-through an approved secret manager. Treat that output as a production credential:
-do not paste it into chat, tickets, logs, shell arguments, environment examples,
-or Git. Cloudflare Worker secrets are the key-management boundary; Neon holds
-only the key id, nonce, and authenticated ciphertext.
+`pnpm hosted:key` prints a fresh key when you need to transfer it through an
+approved secret manager. Treat that output as a production credential: do not
+paste it into chat, tickets, logs, shell arguments, environment examples, or
+Git. Cloudflare Worker secrets are the key-management boundary; Neon holds only
+the key id, nonce, and authenticated ciphertext.
 
 **A replacement `TOKEN_KEY_K1` is not a recoverable mistake.** Every stored token
 is sealed with the key that was current when it was written, so installing a
@@ -140,24 +139,33 @@ Rotation is additive so old rows remain readable:
 
 2. Keep both `TOKEN_KEY_K1` and `TOKEN_KEY_K2` configured, change `TOKEN_KEY_CURRENT_ID` to `k2`, and deploy the Worker through your normal reviewed process.
 3. Confirm new token writes carry key id `k2`. Existing rows remain on `k1` and continue to open because the Worker imports both keys.
-4. Do **not** delete `TOKEN_KEY_K1` until every row sealed by it has been replaced or re-encrypted and that fact has been verified. Automated background re-encryption is not implemented yet, so today retirement requires explicit reauthentication or a separate reviewed migration procedure.
+4. Do **not** delete `TOKEN_KEY_K1` until you have replaced or re-encrypted every row sealed by it and confirmed that no rows still carry `k1`. Automated background re-encryption is not implemented, so retirement currently requires explicit reauthentication or a separate reviewed migration procedure.
 
 A suspected compromise requires rotating immediately, revoking affected Bambu sessions account-side, and treating old ciphertext as exposed. Changing the encryption key does not revoke a Bambu Cloud token.
 
 ## Hosted obligations
 
-The hosted obligations in [`AGENTS.md`](../AGENTS.md) are launch gates. Current status is:
+The hosted obligations in [`AGENTS.md`](../AGENTS.md) are launch gates:
 
-| Obligation | Status |
-| --- | --- |
-| Tokens encrypted at rest with real key management | **Met in code and operations documentation.** AES-256-GCM uses fresh nonces, key ids support overlap during rotation, keys live in Cloudflare Worker secrets, and the schema has no plaintext-token column. Production secret access policy and recovery procedures still require operator configuration. |
-| Written, current threat model | **Met, pending external review.** [`SECURITY.md`](../SECURITY.md) covers the TRMNL installation token, the management token, the database leak inventory including the installations table, telemetry-as-presence-data, and the collector host. The screen-key entries were replaced when the credential was. It has had no external review, which is the remaining honest gap. |
-| User revocation and deletion that actually deletes | **Met.** Uninstalling the plugin in TRMNL fires `POST /trmnl/uninstall`, which deletes the account, its rendered screen (`ON DELETE CASCADE`) and the installation row, verified against real Postgres with raw row counts. `DELETE /v1/account` does the same for the account alone, behind a verified management token, and the installation can enrol again because its owner tag is not tombstoned. |
-| Per-account rate limits and abuse controls | **Met for the surface that exists.** `SCREEN_ADDRESS_LIMITER` is keyed by client address and consulted before any `/trmnl/` route can reach the database, so anonymous probing is bounded before it is paid for. `ENROL_LIMITER` bounds what one installation can make Bambu do, keyed by owner tag, consulted before Bambu is asked to send mail. |
-| Never log a token, email, device id, or webhook URL | **Met by the modules currently here.** All logging goes through `src/log.ts`, whose detail type admits only strings, numbers, booleans and null. `src/worker.ts` builds every line through the single exported `cycleLogDetail`, which emits exactly four fields, and `test/worker.test.ts` asserts against that exact function. The TRMNL and enrolment surfaces log nothing at all, and every credential travels in an `Authorization` header or a URL fragment — never a query string — so platform request logging cannot record one. |
-| Identity from a hosted provider; no stored passwords | **Met, by TRMNL.** Identity is the TRMNL installation itself: a per-installation access token minted by TRMNL during the install handshake, stored here only as a keyed HMAC tag, verified on every request. There is no separate account database, no password is stored, asked for, or accepted anywhere, and the hosted Bambu sign-in uses an emailed code, so a Bambu password never transits this service either (see [`docs/DECISIONS.md` D14](../docs/DECISIONS.md#d14-hosted-sign-in-never-sees-a-bambu-password)). |
+- We encrypt Bambu tokens at rest with AES-256-GCM, fresh nonces, and
+  overlapping key ids for rotation. You must keep the keys in Cloudflare Worker
+  secrets and control production access to them.
+- We keep the threat model in [`SECURITY.md`](../SECURITY.md). Keep it current
+  for your deployment, including the installation token, management token,
+  database contents, telemetry, and collector host, and obtain an independent
+  security review before accepting installations.
+- We delete the linked account, rendered screen, and installation when TRMNL
+  sends `POST /trmnl/uninstall`. `DELETE /v1/account` deletes the account after
+  management-token authentication.
+- We rate-limit the TRMNL surface by client address before database access and
+  rate-limit Bambu enrolment per installation before requesting an email.
+- We never log a token, email, device id, or webhook URL. Credentials travel in
+  authorization headers or URL fragments, never query strings.
+- We use the TRMNL installation as identity and keep only a keyed HMAC tag of
+  its access token. We never store or accept passwords; Bambu sign-in uses an
+  emailed code, so a Bambu password never transits the service.
 
 This repository does not provision the Worker, database, secrets, or schedules.
-If you operate a hosted tier, you are responsible for creating those resources,
-restricting production secret access, testing migrations on an isolated branch,
-and completing an independent security review before accepting installations.
+You are responsible for creating those resources, restricting production
+secret access, testing migrations on an isolated branch, and completing the
+security review before accepting installations.

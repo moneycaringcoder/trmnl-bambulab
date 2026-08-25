@@ -17,7 +17,7 @@
  * names. Losing both is reported rather than retried into the ground.
  *
  * Nothing here sends anything to a printer. The MQTT client has no encoder for
- * it, which is the point of `docs/DECISIONS.md` D2.
+ * it.
  */
 
 import {

@@ -12,7 +12,7 @@
  * printer, and this project does not send messages to printers. During an
  * actual print the fields we care about change every few seconds, so the gap
  * closes almost immediately, and while idle there is nothing to know that HTTP
- * has not already said. `docs/DECISIONS.md` D1 has the full argument.
+ * has not already said.
  *
  * Reconnection is the caller's decision, not this module's. Bambu has
  * temporarily banned accounts over reconnect storms, so backoff belongs where

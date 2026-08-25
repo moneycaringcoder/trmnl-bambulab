@@ -4,7 +4,7 @@
  * This module had no tests when it lived inside `index.ts`, because reaching it
  * meant starting a process against a real database — and that is how a session
  * which could not be stopped reached review. The behaviour under test is small
- * and entirely about order and exit codes, both of which an operator's restart
+ * and entirely about order and exit codes, both of which a restart
  * policy depends on.
  */
 

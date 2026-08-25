@@ -11,8 +11,7 @@
  * `missing_cookie`: it requires a CSRF cookie that the API-host login sequence
  * never issues, and it refuses before the code is even examined. An account
  * with two-factor enabled therefore signs in with an emailed code, which runs
- * on the host we already talk to and needs no cookie. See `docs/DECISIONS.md`
- * D8 for the full reasoning.
+ * on the host we already talk to and needs no cookie.
  *
  * This module performs no I/O. It imports nothing from `node:*`, never calls
  * `fetch`, and never writes to a stream. The caller drives it: it performs the
@@ -124,7 +123,7 @@ export function beginPasswordLogin(account: string, password: string): AuthTrans
  * The bridge keeps offering the password entry point, because it runs on the
  * user's own machine and one request beats waiting for an email.
  *
- * **Unverified.** The owner's real sign-in reached this endpoint only after a
+ * **Unverified.** A real sign-in reached this endpoint only after a
  * password attempt had already returned `verifyCode`. Whether Bambu will email
  * a code with no prior password request is untested against a real account. If
  * it refuses, the hosted flow needs the password after all, and that is a

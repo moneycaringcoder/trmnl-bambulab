@@ -21,7 +21,7 @@ public issue.
 | `src/` | Shared Liquid markup for all four viewport layouts. TRMNL renders it for the self-hosted Private Plugin; the hosted Worker renders it with liquidjs for marketplace markup responses. |
 | `hosted/` | The hosted tier: TRMNL install and management routes, server-side markup rendering, Neon schema and store, token encryption, and the Cloudflare Worker cron. |
 | `collector/` | The optional collector: one MQTT session per hosted account, a single-holder Postgres lease, and the container that supplies rich telemetry. It imports `bridge/src` and `hosted/src` rather than reimplementing either. |
-| `docs/` | Architecture, protocol notes, plugin contracts, the collector operations guide, engineering decisions, and sources. |
+| `docs/` | Architecture, plugin contracts, and deployment and operations guides. |
 | `scripts/` | The secret scanner. |
 | `examples/` | Configuration examples. Never real values. |
 | `.githooks/` | The pre-commit secret gate. |
@@ -62,8 +62,8 @@ scripts/secret-scan.sh path/to/file # just these paths
 ```
 
 `.githooks/pre-commit` runs the staged scan on every commit and is the
-enforcement layer. It does not replace reading your own diff. The full Git
-history was swept for secrets before the repository became public.
+enforcement layer. It does not replace reading your own diff, and no later scan
+can make a secret safe once it has been pushed.
 
 ### What it blocks
 
@@ -92,16 +92,16 @@ inside such a directory is allowed, so the directory can explain itself, and so
 is a `.dev.vars.example` whose values are blank. The example is still scanned in
 full, so a filled-in one is refused.
 
-Documentation paths are partially exempt, so that `docs/` can describe a
-pattern without containing one. The exemption does not cover the rules that
-match unambiguously live material — JSON Web Tokens, bearer tokens, private
-keys, connection strings with a password, and key assignments — because setup
-prose is exactly where somebody pastes a real one while writing an example.
+Documentation paths are partially exempt so `docs/` can describe a pattern
+without containing one. The exemption does not cover rules that match
+unambiguously live material — JSON Web Tokens, bearer tokens, private keys,
+connection strings with a password, and key assignments — because setup prose
+is exactly where you might paste a real value while writing an example.
 
 ### What it does not catch
 
-The gate is a backstop, not a boundary. Four known gaps, written down so nobody
-mistakes a clean scan for a guarantee:
+The gate is a backstop, not a boundary. Four known gaps are listed here so you
+never mistake a clean scan for a guarantee:
 
 - **A value with no name beside it.** A bare 44-character base64 key pasted on
   its own line into a note or a document looks like nothing in particular. The
@@ -124,7 +124,7 @@ Read your own diff. That is the part that actually works.
 ### `--no-verify` is never acceptable
 
 Do not bypass the hook. Not for a quick fix, not for a commit you intend to
-amend, not for a branch you think nobody will pull. The gate is the only
+amend, and not for a branch you expect to remain private. The gate is the only
 automatic protection against a class of mistake that cannot be undone by a
 later commit.
 
@@ -193,8 +193,8 @@ So support is claimed per field, not per model, and only where a sanitized
 fixture and a test that consumes it are both in the repository. A pull request
 that claims a field is available on a model without a fixture will be declined.
 
-Fixtures for a model nobody has covered yet are welcome on their own. That is
-the first step, and a genuinely useful contribution before any code changes.
+Fixtures for a printer not yet covered are welcome on their own. That is the
+first step, and a genuinely useful contribution before any code changes.
 
 ## Hard boundaries
 

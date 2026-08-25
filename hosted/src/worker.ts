@@ -64,7 +64,7 @@ const logger = createLogger("info");
  *
  * `cloud` and `bytes` are here because an outcome alone is undiagnosable:
  * "rendered" does not say whether the cloud was reachable or how big the result
- * was, and those are the two questions an operator actually has.
+ * was, and those are the two questions a log reader actually has.
  */
 export function cycleLogDetail(summary: AccountCycleSummary): LogDetail {
   const result = summary.result;

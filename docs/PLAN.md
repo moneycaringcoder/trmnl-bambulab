@@ -147,12 +147,22 @@ an account. What is left, in order:
    plugin is the self-hosted webhook one. Publishing an Unlisted Recipe is an
    action in TRMNL's interface, so it is the owner's to take.
 
-What remains is publishing the recipe, which is a button in TRMNL's interface and
-therefore the owner's. Identity is no longer a
-blocker: it is provisioned and verified. Deploying the Worker is still the
-owner's call, and a trusted origin has to be registered with the provider once
-that deployment has a domain — `localhost` is allowed today so the page can be
-built and driven before anything is deployed.
+**The hosted tier is deployed and serving.** Verified against the live URL rather
+than locally: all three secrets present, sign-up from the deployed origin
+accepted and correctly withholding a session until the address is verified, an
+unverified identity refused by the token endpoint, a forged Ed25519 session
+refused, and `GET /v1/screen` answering an identical 404 to a missing key, a
+wrong key, a wrong scheme and a key in the query string. The deployed origin is
+registered with the identity provider. Preview URLs are off, so no
+version-prefixed hostname serves the enrolment API.
+
+The cron is running on its five-minute schedule against a real Bambu account and
+writing real renders — name and state, no progress, which is HTTP fidelity and
+exactly what the thin tier is. Rich figures wait on the collector.
+
+What remains for the hosted tier is a TRMNL plugin on the polling strategy with
+the screen key pasted into it, and publishing the Unlisted Recipe. Both are
+actions inside TRMNL's own interface, so both are the owner's.
 
 ## Known unknowns
 
@@ -165,4 +175,4 @@ been moved into `docs/BAMBU-PROTOCOL.md`.
 | Whether `/user/print` ever carries `progress`, for a cloud-started print | Nothing: MQTT supplies progress, and the hosted tier shows state without a percentage |
 | Whether TRMNL's polling reader accepts our payload unchanged | The shape is already flat, which is what it wants; worst case is a thin adapter |
 | Whether a hosted account can be enrolled without the user pasting anything | Probably not: they must carry one key from us to TRMNL. One paste is the floor |
-| Whether the collector's MQTT session yields the rich fields for a real account | Unknown until the owner's credentials run through it. The path is built and proven against real Postgres and the real cloud API, including a refused token; a *valid* token has never been tried |
+| ~~Whether the collector's MQTT session yields the rich fields for a real account~~ | **Settled.** Run against a real account it produced progress, layer, layers, remaining, and both temperatures with their targets — the figures no HTTP endpoint carries. It also exposed the reason the render needs an HTTP baseline: MQTT carries no printer name, so the first version rendered nameless cards |

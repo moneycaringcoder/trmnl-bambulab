@@ -1,316 +1,197 @@
 # TRMNL plugin contract and rendering
 
-Research date: 2026-08-24.
+The repository supports two TRMNL delivery contracts. They share the normalized
+payload and the four Liquid layouts, but installation and rendering differ.
 
-## Plugin type
+- **Hosted is a TRMNL third-party marketplace plugin.** TRMNL performs the
+  install handshake, identifies each installation with its own access token, and
+  asks the Worker for server-rendered markup.
+- **Self-hosted is a TRMNL Private Plugin using Webhook.** The bridge runs on the
+  operator's machine and pushes merge variables to that plugin's webhook URL.
+  TRMNL cannot initiate a request to a private machine, so the bridge has to make
+  the outbound request.[2][3]
 
-Two strategies, one per tier, because the two tiers sit in different places on
-the network.
+## Hosted marketplace contract
 
-**Self-hosted uses Webhook.** The bridge runs on the user's own machine and
-POSTs to their Private Plugin's webhook URL. TRMNL cannot reach a machine on
-someone's home network, so the bridge has to do the reaching.[2][3]
+The hosted tier does not use a Private Plugin, Recipe, polling configuration,
+screen key, or separate identity provider. Installing the marketplace plugin is
+the identity handshake. Bambu sign-in is a separate step used only to obtain the
+printer credential.
 
-**Hosted uses Polling.** TRMNL fetches from a Worker on the public internet,
-which it can reach perfectly well. This document originally ruled polling out
-for the same reason the self-hosted tier still uses webhooks, and that reason
-does not apply to a Worker. Pulling also means we never receive the user's
-webhook URL, which is a bearer credential for their display. See
-`docs/DECISIONS.md` D11.
+The Worker implements these routes:
 
-The two strategies differ in one detail that will catch you out. The webhook
-body wraps its variables: `{"merge_variables": {...}}`. A polled response puts
-them at the **root**: `{"v": 1, "printers": [...]}`. TRMNL's own troubleshooting
-says as much — "we suggest putting relevant merge variables in the root node of
-your payload".[2]
+| Route | Caller | Purpose |
+| --- | --- | --- |
+| `GET /trmnl/install` | User's browser, redirected by TRMNL | Exchanges TRMNL's single-use install code for a per-installation access token, then opens setup with a short-lived management token. |
+| `POST /trmnl/installed` | TRMNL | Records the installation UUID and plugin-setting id from the authenticated success webhook. Names and email addresses in the webhook are deliberately discarded. |
+| `POST /trmnl/markup` | TRMNL | Authenticates the installation's Bearer token and returns HTML fragments for all four layouts. |
+| `GET /trmnl/manage` | User's browser, redirected by TRMNL | Resolves TRMNL's installation UUID and opens setup with a fresh short-lived management token. |
+| `POST /trmnl/uninstall` | TRMNL | Deletes the linked account, stored render, and installation. |
 
-### Polling authentication, and why the key is a header
+TRMNL mints the installation access token and presents it on authenticated
+requests. The Worker stores only a keyed HMAC tag of that token, never a
+replayable copy. The access token never reaches the browser. The setup page uses
+a one-hour management token delivered in the URL fragment so request logs do not
+record it.[13][14][15][16]
 
-The hosted tier's whole authentication story depends on one TRMNL capability,
-so it is recorded here rather than left in a code comment: **a Polling plugin
-can interpolate a custom form field into its request headers.**
+A five-minute Worker cron and the optional collector write normalized payloads to
+Postgres. The markup route reads the latest stored payload and renders
+`src/full.liquid`, `src/half_horizontal.liquid`,
+`src/half_vertical.liquid`, and `src/quadrant.liquid` with liquidjs. It returns:
 
-TRMNL's Private Plugins guide states it directly — "your polling headers may
-access values from custom form fields via `##{{ form_field_keyname }}`
-interpolation" — and gives the example `authorization=bearer ##{{ api_key }}`.
-Headers are assigned with `=` and separated with `&`, and a literal `=` inside a
-value is percent-encoded.[2]
+```json
+{
+  "markup": "<div class=\"view view--full\">...</div>",
+  "markup_half_horizontal": "<div class=\"view view--half_horizontal\">...</div>",
+  "markup_half_vertical": "<div class=\"view view--half_vertical\">...</div>",
+  "markup_quadrant": "<div class=\"view view--quadrant\">...</div>"
+}
+```
 
-That is what lets the screen key travel in an `Authorization: Bearer` header
-instead of a query string. It matters because a credential in a URL is recorded
-by every intermediary's access log and by Cloudflare's own per-request
-invocation log. If this capability ever went away, the hosted tier would have no
-way to authenticate that does not write the key into a log, so it is worth
-noticing if TRMNL changes it.
+Rendering stored data rather than querying Bambu during a markup request keeps
+Bambu traffic on the service's five-minute schedule. A TRMNL refresh setting
+therefore cannot increase Bambu traffic or place cloud round trips inside the
+markup request timeout.[14]
 
-The same interpolation works in the polling URL and body. Global variables such
-as `##{{ trmnl.user.first_name }}` are available in all three.[2]
+## Self-hosted webhook contract
 
-A polled endpoint can also be locked to TRMNL's own server addresses, published
-at `https://trmnl.com/api/ips`.[2] The hosted tier reads that list from a
-`TRMNL_ALLOWED_IPS` variable and ships it empty, because shipping a guessed
-address list would lock TRMNL out of every account at once.
-
-## Webhook constraints
-
-Standard accounts:
-
-- Maximum 12 pushes/hour.
-- Maximum 2 kB request data.
-
-TRMNL+:
-
-- Maximum 30 pushes/hour.
-- Maximum 5 kB request data.
-
-Faster pushes receive HTTP 429.[3] Design and test against the standard 12/hour and 2 kB limits.
-
-Send a complete compact snapshot each time. Full replacement is easier to reason about than webhook `deep_merge`, avoids stale optional values, and should fit comfortably under 2 kB.
-
-Example request shape:
+Create a TRMNL Private Plugin with the **Webhook** strategy and put its webhook
+URL in `bridge/.env`. The bridge sends a complete compact snapshot at most once
+every five minutes. The webhook request wraps the variables:
 
 ```json
 {
   "merge_variables": {
-    "schema_version": 1,
-    "connection": {
-      "mode": "hybrid",
-      "local": "connected",
-      "cloud": "connected",
-      "cloud_metadata_stale": false
-    },
-    "printer": {
-      "name": "Workshop A1",
-      "model": "A1",
-      "online": true,
-      "stale": false
-    },
-    "job": {
-      "state": "printing",
-      "raw_state": "RUNNING",
-      "name": "Current print",
-      "progress": 42,
-      "remaining_minutes": 76,
-      "stage": "Printing",
-      "stage_code": "2",
-      "layer": { "current": 81, "total": 194 }
-    },
-    "temperatures": {
-      "nozzle": 220,
-      "nozzle_target": 220,
-      "bed": 60,
-      "bed_target": 60
-    },
-    "material": {
-      "source": "AMS Lite 1",
-      "type": "PLA",
-      "color": "#E5E5E5"
-    },
-    "project": {
-      "cover_url": null,
-      "weight_grams": null,
-      "length_mm": null,
-      "bed_type": null
-    },
-    "alerts": {
-      "active": false,
-      "hms": [],
-      "print_error": null
-    },
-    "updated_at": "2026-08-22T12:00:00Z"
+    "v": 1,
+    "updated_at": "2026-01-01T00:00Z",
+    "printers": [
+      {
+        "state": "printing",
+        "raw_state": "SYNTHETIC_RUNNING",
+        "name": "Demo Printer",
+        "model": "Demo Model",
+        "online": true,
+        "stale": false,
+        "progress": 42,
+        "layer": 81,
+        "layers": 194,
+        "remaining": "1h 16m",
+        "stage": "Printing",
+        "nozzle": 220,
+        "nozzle_target": 220,
+        "bed": 60,
+        "bed_target": 60,
+        "material": "Demo PLA",
+        "job": null,
+        "alert": null
+      }
+    ],
+    "hidden": 0,
+    "cloud": "connected"
   }
 }
 ```
 
-This is the application contract. Raw MQTT must never reach Liquid templates.
+This is the application boundary. Raw Bambu responses and raw MQTT reports must
+never reach Liquid templates.
 
-## Privacy budget
+### Webhook limits
+
+Standard accounts allow at most 12 pushes per hour and 2 kB of request data.
+TRMNL+ allows 30 pushes per hour and 5 kB. Faster pushes receive HTTP 429.[3]
+The bridge designs and tests against the standard limits.
+
+Each push is a full replacement rather than a deep merge. Replacement prevents
+an optional value that disappeared from remaining stale on the display.
+
+## Shared payload rules
+
+The canonical sample is
+`../bridge/fixtures/merged/printing.synthetic.json`. A payload contains at most
+three printers, ordered so the printer needing attention appears first. Optional
+values are omitted by the compact serializer, so every template must guard them.
+Absent and unsupported values stay absent; templates must not invent zeros.
 
 Do not include:
 
-- printer serial
-- printer IP
-- LAN access code
-- Bambu account email, password, verification code, or access token
-- TRMNL webhook UUID
-- task/project/profile IDs
-- raw provider URLs other than an explicitly allowlisted, short-lived project cover URL
-- provider provenance details beyond safe coarse connection mode
-- full raw MQTT
+- printer serials, device ids, IP addresses, or LAN access codes
+- Bambu email addresses, passwords, verification codes, or access tokens
+- TRMNL webhook URLs, webhook UUIDs, installation tokens, or installation ids
+- task, project, or profile ids
+- raw provider URLs or raw telemetry
 - camera images
 
-Job names can reveal private model names. Make job-name export configurable and default to a generic value until the user explicitly enables it.
+Job names can reveal private model names. Export is configurable and remains off
+unless the user enables it.
 
-## View hierarchy
+## The four layouts
 
-Provide all four templates:
+The same printer array is rendered at four densities. Smaller layouts are not
+one-printer slots; they are alternative views of the same plugin when it appears
+in a TRMNL Mashup.
 
-```text
-src/
-  settings.yml
-  shared.liquid
-  full.liquid
-  half_horizontal.liquid
-  half_vertical.liquid
-  quadrant.liquid
-```
+| Layout | Intended content |
+| --- | --- |
+| `full` | Printer and connection state, prominent progress, remaining time, layer, nozzle, bed, filament, alerts, and freshness. |
+| `half_horizontal` | Printer, state, progress rail, remaining time, layer, and a compact alert. |
+| `half_vertical` | Prominent progress or state, remaining time, and compact temperatures. |
+| `quadrant` | State or progress, remaining time, and an alert marker. |
 
-TRMNL's private-plugin export format uses `settings.yml` plus the four viewport templates, while the official `trmnlp` local tool adds `shared.liquid` and project metadata for development.[7]
+Idle views do not show empty print metrics. Offline and stale readings remain
+visually distinct from idle. The hosted tier has the same rich MQTT fields when
+the optional collector is running and falls back to the honest HTTP subset when
+it is not.
 
-Suggested information density:
-
-### Full
-
-- printer name + connectivity
-- large progress percentage and progress rail
-- state/stage
-- remaining time and estimated finish
-- layer current/total
-- nozzle and bed current/target
-- active filament
-- prominent alert area
-- freshness timestamp
-
-### Half horizontal
-
-- status + printer
-- large progress rail
-- remaining time
-- layer
-- compact alert indicator
-
-### Half vertical
-
-- large progress percentage
-- state
-- remaining time
-- compact temperatures
-
-### Quadrant
-
-- state icon/word
-- progress percentage
-- remaining time
-- alert marker
-- coarse connection mode when degraded from hybrid
-
-Cloud-derived project cover art may be used only after URL allowlisting, privacy review, expiry handling, and 1-bit rendering tests. The display must remain useful when the image is absent or stale.
-
-Idle views should not show fake zeros. Replace print metrics with readiness, temperatures, filament, and last update. Offline/stale views must be visually distinct from idle.
-
-## Liquid rules
+## Liquid and e-paper rules
 
 TRMNL uses Liquid for variables, conditions, loops, and filters.[5]
 
-- Guard every optional nested object before reading it.
-- Use explicit empty/offline/error states.
-- Keep calculations in the bridge when they affect meaning; use Liquid for presentation.
-- Iterate over a bounded alert collection.
-- Truncate long names and stages.
-- Avoid client-side fetches.
-- Put reusable templates and styles in Shared markup; TRMNL prepends Shared to every view.[2]
+- Guard optional values before reading or formatting them.
+- Keep semantic calculations in the bridge payload builder; use Liquid for
+  presentation.
+- Use explicit empty, offline, stale, and error states.
+- Bound alert iteration and truncate long names and stages.
+- Avoid client-side fetches, animation-dependent meaning, hover, scrolling, and
+  interaction requirements.
+- Use high contrast, large figures, and hierarchy that survives 1-bit output.
+- Use TRMNL framework components and responsive utilities rather than assuming
+  one panel geometry.[6][8]
+- Test all four layouts at their actual output dimensions.
 
-## E-paper design rules
+## Local template development
 
-The original TRMNL target is 800×480 and e-paper optimized, but the current framework supports multiple device geometries and bit depths. Use framework components and responsive utilities instead of assuming one panel.[6][8]
+The official `trmnlp` tool can serve, lint, and render the templates.[7]
+The container form avoids a local Ruby installation:
 
-- High contrast first.
-- Grayscale-safe hierarchy; hue is optional enhancement.
-- Large numbers and short labels.
-- No animation-dependent meaning.
-- No hover, scrolling, or interaction requirements.
-- Avoid dense charts for v1; a progress rail communicates the key value better.
-- Alert state must survive 1-bit rendering.
-- Test every layout at actual output dimensions.
-
-## Local development
-
-The official `trmnlp` tool can scaffold, serve, build, lint, clone, pull, push, and render PNGs. It watches Liquid files and uses the TRMNL design system.[7]
-
-Expected loop after implementation begins:
-
-```bash
-trmnlp serve
-trmnlp lint
-trmnlp build --png
+```sh
+cp .trmnlp.yml.example .trmnlp.yml
+docker run --rm -v "$PWD:/plugin" trmnl/trmnlp:latest lint
+docker run --rm -v "$PWD:/plugin" trmnl/trmnlp:latest build --png
+docker run --rm -p 4567:4567 -v "$PWD:/plugin" trmnl/trmnlp:latest serve
 ```
 
-Review third-party `transform.*` files before running cloned plugins: current `trmnlp` executes serverless transforms during preview by default.[7]
+Run these from the repository root. The copied `.trmnlp.yml` is ignored, so
+preview variables and any local credentials stay out of Git.
 
-Do not run `trmnlp push` casually from a public clone. This repository
-intentionally omits `id` from `src/settings.yml`, so the official tool creates a
-new plugin on every push rather than updating an existing plugin.[7] Use
-`trmnlp clone` or `trmnlp pull` when working on your own existing plugin, and
-never stage the `id` that sync writes locally.
+`src/settings.yml` describes the self-hosted Webhook plugin because that is the
+only tier synchronized through `trmnlp`. It deliberately omits `id`: pushing a
+public clone must create a new Private Plugin rather than update an existing
+one. A local sync may add an id, but contributors must never commit it. Do not
+run `trmnlp push`, `login`, `pull`, `clone`, or `list` unless you intend to
+access or change plugins in your own TRMNL account.
 
-## Distribution
+Review third-party `transform.*` files before previewing a cloned plugin because
+`trmnlp` may execute serverless transforms.[7]
 
-**Hosted uses an Unlisted Recipe.** Recipes provide a one-click installation of
-a private plugin. An Unlisted Recipe skips moderation and produces a shareable
-link immediately, so each hosted user does not have to reconstruct the Polling
-plugin by hand.[9]
+## Historical note: the abandoned polling design
 
-The Recipe declares the documented Polling settings (`strategy: polling`,
-`refresh_interval`, `polling_url`, `polling_headers`, and `polling_verb: GET`)
-and one custom field. TRMNL requires `keyname`, `name`, and `field_type` for a
-form field, and `password` is a supported field type.[10][11]
-
-```yaml
-custom_fields:
-- keyname: screen_key
-  name: Screen key
-  field_type: password
-  help_text: Copy this from the hosted enrolment page. You can rotate it there.
-```
-
-That Recipe's settings are written down here rather than kept in
-`src/settings.yml`, and the reason is a mistake worth not repeating. That
-file is uploaded by `trmnlp push` and by any repository sync, so whatever it
-declares becomes the live plugin's configuration. While it declared
-`strategy: polling` for a hosted tier that is not deployed, a single sync would
-have reconfigured the one plugin that does exist — the self-hosted webhook one —
-and pointed it at a placeholder host. One live settings file, one strategy, and
-the other tier's settings kept as documentation:
-
-For open-source safety, the synced file deliberately keeps the self-hosted
-`strategy: webhook` but omits the plugin `id`. The official `trmnlp` project
-documents `src/settings.yml` as the configuration uploaded and downloaded by
-`push` and `pull`; it has no local-only override for the plugin id.
-`.trmnlp.yml` is already ignored here, but it configures only the local preview
-server and cannot carry an upload target. Omitting `id` is therefore the
-conservative mechanism: a clone cannot target the owner's plugin, a push with
-no id creates a new plugin, and the owner's repository sync re-adds their id
-only in their local copy. Contributors must never commit an `id:` line.
-
-```yaml
-strategy: polling
-refresh_interval: 15
-polling_url: https://<your-worker-host>/v1/screen
-polling_headers: 'authorization=bearer ##{{ screen_key }}'
-polling_verb: GET
-```
-
-Polling headers assign a header with `=` and separate multiple headers with
-`&`. The screen key uses TRMNL's documented `##{{ }}` custom-field prefix
-exactly; its header setting is:[2]
-
-```yaml
-polling_headers: 'authorization=bearer ##{{ screen_key }}'
-```
-
-The hosted cron renders every five minutes, but a default TRMNL account has a
-15-minute minimum refresh; TRMNL+ can reach five minutes. The Recipe therefore
-declares `refresh_interval: 15`: a standard display can skip two intermediate
-hosted renders, while TRMNL+ owners may choose the faster cadence.[11][12]
-
-**Unverified:** TRMNL documents adding custom fields to a Recipe and using their
-values, but does not say whether those fields are prompted during Recipe
-installation or configured afterwards. Do not promise either flow until it has
-been observed.[9][10]
-
-Self-hosted remains a separately created Private Plugin using the Webhook
-strategy; it does not use the Recipe's Polling URL, authorization header, or
-screen-key field.[2]
+An earlier hosted design used a Private Plugin with Polling, an unlisted Recipe,
+and a screen key interpolated into an authorization header. That design was
+never the current marketplace contract. The marketplace conversion removed the
+polling endpoint, the Recipe, screen keys, and the separate hosted identity
+system. The self-hosted Webhook strategy was unaffected. The full reasoning is
+preserved as superseded decisions D11 through D13 and D16 through D17 in
+`DECISIONS.md`; D19 records the replacement.
 
 ## Sources
 
@@ -318,9 +199,9 @@ screen-key field.[2]
 [3] https://docs.trmnl.com/go/private-plugins/webhooks.md — TRMNL Private Plugin Webhooks
 [5] https://help.trmnl.com/en/articles/10671186-liquid-101 — TRMNL Liquid 101
 [6] https://docs.trmnl.com/go/private-plugins/templates.md — TRMNL Screen Templating
-[7] https://github.com/usetrmnl/trmnlp — TRMNL trmnlp local development server
+[7] https://github.com/usetrmnl/trmnlp — TRMNL local development server
 [8] https://trmnl.com/framework — TRMNL Framework
-[9] https://help.trmnl.com/en/articles/10122094-plugin-recipes — TRMNL Plugin Recipes
-[10] https://help.trmnl.com/en/articles/10513740-custom-plugin-form-builder — TRMNL Custom Plugin Form Builder
-[11] https://help.trmnl.com/en/articles/10542599-importing-and-exporting-private-plugins — TRMNL Private Plugin import/export settings
-[12] https://help.trmnl.com/en/articles/10113695-how-refresh-rates-work — TRMNL refresh rates
+[13] https://docs.trmnl.com/go/plugin-marketplace/plugin-installation-flow.md — marketplace installation
+[14] https://docs.trmnl.com/go/plugin-marketplace/plugin-screen-generation-flow.md — marketplace screen generation
+[15] https://docs.trmnl.com/go/plugin-marketplace/plugin-management-flow.md — marketplace management
+[16] https://docs.trmnl.com/go/plugin-marketplace/plugin-uninstallation-flow.md — marketplace uninstallation

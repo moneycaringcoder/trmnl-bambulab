@@ -1,5 +1,8 @@
 # Agent instructions
 
+Rules for AI agents working in this repository. Human contributors: the same
+rules apply to you, minus the framing — see `CONTRIBUTING.md`.
+
 ## What this is
 
 A TRMNL plugin that shows the status of your Bambu Lab printers on an e-paper
@@ -14,23 +17,23 @@ The whole product:
 
 Two ways to run it, and both must keep working:
 
-- **Hosted.** The user signs in and picks printers. We run everything. They
-  install nothing.
-- **Self-hosted.** The user runs the bridge themselves and our backend is never
-  involved.
-
-Anything hosted runs on Cloudflare and Neon.
+- **Hosted.** A TRMNL third-party plugin: installing it runs the handshake,
+  the user signs in to Bambu and picks printers on the plugin's own page, and
+  a Cloudflare Worker renders the display. The user installs nothing.
+- **Self-hosted.** The user runs the bridge themselves and the hosted backend
+  is never involved.
 
 ## Non-negotiable
 
 - **Read only.** Never send a command to a printer. No pause, resume, stop,
   temperature, motion, filament, or print-start. Not through MQTT, not through
-  the cloud API, not ever.
+  the cloud API, not ever. The MQTT client deliberately has no publish encoder,
+  and a test asserts none appears.
 - **No LAN.** There is no local transport, no access code, and no printer
   network configuration. Bambu Cloud is the only data source.
 - **No secrets in Git.** Never commit a printer serial, a device id, an account
-  email, a Bambu token, a TRMNL webhook URL or its UUID, a captured model or job
-  name, or raw telemetry. `scripts/secret-scan.sh` runs in the pre-commit hook.
+  email, a Bambu token, a TRMNL credential, a captured model or job name, or
+  raw telemetry. `scripts/secret-scan.sh` runs in the pre-commit hook.
 - **Never disable TLS verification**, and never add an option that lets a user
   disable it.
 - **A password or verification code is never stored.** It is used for one
@@ -38,8 +41,8 @@ Anything hosted runs on Cloudflare and Neon.
   process argument.
 - **Nothing is a fabricated zero.** Absent or unsupported is `null`. An unknown
   state token is preserved, not mapped to idle or healthy.
-- **Payload stays under the TRMNL ceiling**, proven by a test: 2 kB standard,
-  5 kB for TRMNL+.
+- **Payload stays under the TRMNL webhook ceiling**, proven by a test: 2 kB
+  standard, 5 kB for TRMNL+.
 
 ## Hosted backend rules
 
@@ -47,35 +50,33 @@ The hosted tier necessarily holds a user's Bambu Cloud token, because the user
 runs nothing. That is allowed, and it carries obligations that are not optional:
 
 - Tokens encrypted at rest, with a real key management story.
-- A written threat model, kept current.
+- A written threat model, kept current. It lives in `SECURITY.md`.
 - The user can revoke and delete, and deletion actually deletes.
-- Per-account rate limits and abuse controls before launch, not after.
-- Never log a token, an email, a device id, or a webhook URL.
-- Identity comes from a hosted identity provider. Do not store passwords.
+- Per-account rate limits and abuse controls.
+- Never log a token, an email, a device id, or any TRMNL credential.
+- Identity comes from TRMNL's install handshake. Do not store passwords or
+  build a second account system.
 
-Self-hosting must never require the hosted backend, and must never send anything
-to it.
+Self-hosting must never require the hosted backend, and must never send
+anything to it.
 
 ## Where the truth is
 
 1. Real captured responses from a real account. This beats everything.
 2. Bambu Lab Wiki for supported behavior and security policy.
-3. TRMNL docs for the webhook contract and rendering.
+3. TRMNL docs for the plugin contracts and rendering.
 4. OpenBambuAPI and ha-bambulab for reverse-engineered field meanings.
 
 Bambu publishes no supported public cloud API. Every endpoint is
-reverse-engineered and can change without notice. It already did once: the 2FA
-endpoint began requiring a CSRF cookie the API host never issues, and the
-working path is to fall back to email-code login.
-
-When sources disagree, document the disagreement and pick the conservative read.
+reverse-engineered and can change without notice. When sources disagree,
+document the disagreement and pick the conservative read.
 
 ## License hazard
 
 Read these for behavior; never copy their code or assets.
 
 | Project | License | Rule |
-| --- | --- | --- |
+|---|---|---|
 | `greghesp/ha-bambulab` | none | Behavior reference only. No code, no certificates. |
 | `maziggy/bambuddy` | AGPL-3.0 | Copying would force AGPL onto this MIT project. |
 | `Rdiger-36/StudioBridge` | GPL-3.0 | Same hazard. |
@@ -94,9 +95,9 @@ scripts/secret-scan.sh --tree
 ```
 
 The three packages are separate installs with no workspace root, so each one
-needs its own invocation. `hosted` and `collector` share source with `bridge` by
-importing it directly, which means a change under `bridge/src` can break either
-of them without breaking `bridge`. Run all three when you touch shared code.
+needs its own invocation. `hosted` and `collector` run `bridge/src` modules
+from source, which means a change under `bridge/src` can break either of them
+without breaking `bridge`. Run all three when you touch shared code.
 
-Then run the `secret-auditor` agent over the change. A `blocked` verdict stops
-the commit.
+Template changes additionally need `trmnlp lint` clean and all four layouts
+rendered and looked at — `docs/PLUGIN.md` has the commands.

@@ -1,8 +1,8 @@
 # Contributing
 
-`trmnl-bambulab` is a local bridge that turns Bambu Lab printer telemetry into
-a TRMNL e-paper display. It is monitoring only: it never publishes a command
-that controls a printer.
+`trmnl-bambulab` contains a self-hosted bridge and a hosted TRMNL marketplace
+plugin. Both turn Bambu Lab printer telemetry into an e-paper display. The
+project is monitoring only: it never publishes a command that controls a printer.
 
 Contributions are welcome. The single highest-value thing you can send is a
 **sanitized fixture captured from real hardware**, because no field-name claim
@@ -18,36 +18,34 @@ public issue.
 | `bridge/` | The bridge: cloud providers, normalizers, coordinator, payload builder, subscribe-only MQTT client, push scheduler, daemon, and setup CLI. |
 | `bridge/fixtures/` | Sanitized and synthetic fixtures, split into `cloud/` and `merged/`. |
 | `bridge/test/` | Vitest suites, driven by those fixtures. |
-| `src/` | The TRMNL Private Plugin: shared markup and the four viewport Liquid templates. TRMNL's repository sync reads this path and writes `src/settings.yml`, so neither the directory nor that file may move. |
-| `hosted/` | The hosted tier: Neon schema and store, token encryption, and the Cloudflare Worker cron. |
-| `collector/` | The collector: one MQTT session per hosted account, a single-holder Postgres lease, and the container that runs it. Imports `bridge/src` and `hosted/src` rather than reimplementing either. |
-| `docs/` | Architecture, protocol notes, plugin contract, development plan, the collector design and its operations guide, and sources. |
-| `scripts/` | `secret-scan.sh` and the agent session launcher. |
+| `src/` | Shared Liquid markup for all four viewport layouts. TRMNL renders it for the self-hosted Private Plugin; the hosted Worker renders it with liquidjs for marketplace markup responses. |
+| `hosted/` | The hosted tier: TRMNL install and management routes, server-side markup rendering, Neon schema and store, token encryption, and the Cloudflare Worker cron. |
+| `collector/` | The optional collector: one MQTT session per hosted account, a single-holder Postgres lease, and the container that supplies rich telemetry. It imports `bridge/src` and `hosted/src` rather than reimplementing either. |
+| `docs/` | Architecture, protocol notes, plugin contracts, the collector operations guide, engineering decisions, and sources. |
+| `scripts/` | The secret scanner. |
 | `examples/` | Configuration examples. Never real values. |
 | `.githooks/` | The pre-commit secret gate. |
-| `.omp/` | Project-scoped Oh My Pi agent definitions used to build this repository. |
 
-Read the documentation in the order given in the README before making a
-substantial change. `AGENTS.md` states the project boundaries in their shortest
-form and applies to humans as much as to agents.
+Read `AGENTS.md` before making a substantial change. It states the project
+boundaries in their shortest form and applies to humans as much as to agents.
 
 ## Getting set up
 
-Run these in order. The order matters.
+From the repository root, enable the hook before installing dependencies:
 
 ```sh
 git config core.hooksPath .githooks
-cd bridge && pnpm install
-pnpm typecheck
-pnpm test
+pnpm --dir bridge install
+pnpm --dir hosted install
+pnpm --dir collector install
 ```
 
-The hook configuration comes first because a fresh clone does not enable
-repository hooks automatically. Until you run it, nothing stops a commit that
-leaks a printer identifier, and a leak is permanent once pushed.
+A fresh clone does not enable repository hooks automatically. Until the hook
+path is configured, nothing stops a commit that leaks a printer identifier, and
+a leak is permanent once pushed.
 
-Node 22 or newer is required; see the `engines` field in `bridge/package.json`.
-pnpm is the package manager, and the lockfile is committed.
+Node 22.18 or newer is required. pnpm is the package manager, and each of the
+three packages has its own committed lockfile.
 
 ## The secret gate
 
@@ -64,8 +62,8 @@ scripts/secret-scan.sh path/to/file # just these paths
 ```
 
 `.githooks/pre-commit` runs the staged scan on every commit and is the
-enforcement layer. The editor-time warning hook under `.omp/extensions/` is an
-early warning, not a gate. Neither replaces reading your own diff.
+enforcement layer. It does not replace reading your own diff. The full Git
+history was swept for secrets before the repository became public.
 
 ### What it blocks
 
@@ -179,10 +177,10 @@ replace it deliberately rather than by accident.
 scripts/secret-scan.sh bridge/fixtures/cloud/your-fixture.json
 ```
 
-**States most wanted**, from the fixture matrix in `docs/BAMBU-PROTOCOL.md`:
-idle, preparing, printing, paused, finished, failed, offline, an HMS alert, and
-a `print_error` that arrives with no HMS entry. Partial reports mid-print are
-valuable too, because the bridge has to merge them into accumulated state.
+**States most wanted:** idle, preparing, printing, paused, finished, failed,
+offline, an HMS alert, and a `print_error` that arrives with no HMS entry.
+Partial reports mid-print are valuable too, because the bridge has to merge
+them into accumulated state.
 
 ## Supported printers
 
@@ -220,18 +218,18 @@ Commits follow Conventional Commits, matching the existing history: `docs:`,
 lower-case subject, no trailing period. Explain the reasoning in the body when
 it is not obvious from the diff.
 
-Before opening a pull request:
+Before opening a pull request, run all three packages and the tree scan from the
+repository root:
 
 ```sh
-cd bridge && pnpm typecheck && pnpm test
-cd ../hosted && pnpm typecheck && pnpm test && pnpm exec wrangler deploy --dry-run
+pnpm --dir bridge typecheck && pnpm --dir bridge test
+pnpm --dir hosted typecheck && pnpm --dir hosted test
+pnpm --dir collector typecheck && pnpm --dir collector test
 scripts/secret-scan.sh --tree
 ```
 
-Continuous integration runs the same checks: the secret scan over the whole
-tree, the bridge on Node 22 and Node 24, and the hosted tier including the
-bundle. The `--dry-run` needs no credential; it neither uploads nor
-authenticates.
+Continuous integration repeats these package checks and the whole-tree secret
+scan.
 
 Expectations for the pull request itself:
 

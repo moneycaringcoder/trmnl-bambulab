@@ -1,0 +1,10 @@
+# The repository ignores *.png globally because screenshots tend to carry real
+# printer names and job names. These five are synthetic renders produced from
+# hand-written demo data, and they are allowlisted by exact name so a stray
+# capture dropped in this directory stays ignored rather than committing
+# silently.
+!full.png
+!full-two.png
+!half-horizontal.png
+!half-vertical.png
+!quadrant.png

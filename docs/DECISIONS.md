@@ -5,7 +5,7 @@ supports a decision is cited to `docs/RESOURCES.md` or to the note that
 produced it. Where a claim has not been verified against a real account, it
 says so.
 
-Last revised: 2026-08-24.
+Last revised: 2026-08-25.
 
 ---
 
@@ -58,14 +58,13 @@ writable stream of bytes and does not know what produced them.
 
 **Chosen.** Two independent read paths, merged.
 
-Bambu Cloud HTTP gives printer name, model, online, job name, job status,
-progress percentage and start time. It does **not** give layer counts,
-remaining time, or temperatures in any endpoint we could find documented.
-Those exist only in MQTT reports.
+Bambu Cloud HTTP gives printer name, model, connectivity, and coarse job state.
+Real responses did not provide reliable live progress, layer counts, remaining
+time, or temperatures. Those richer fields arrive in MQTT reports.
 
-So HTTP alone is a complete, honest product: which printers you have, whether
-they are online, what they are printing, and how far along it is. MQTT adds
-layer, remaining time, temperatures, stage and HMS alerts on top.
+HTTP alone is still an honest floor: which printers are selected, whether they
+are reachable, and their best-known coarse state. MQTT adds progress, layers,
+remaining time, temperatures, stage, filament, and HMS alerts.
 
 This is what lets the hosted tier ship without a persistent connection, and it
 is why the coordinator merges per-field observations from independent providers
@@ -73,26 +72,26 @@ instead of picking one source.
 
 ## D4. Cadence is five minutes, everywhere
 
-**Chosen.** One push every five minutes, at most.
+**Superseded in part by D18.** The self-hosted Webhook push and the hosted HTTP
+cron still run at most every five minutes. The optional collector writes rich
+MQTT snapshots more often so the next TRMNL markup request sees recent data.
 
-TRMNL accepts 12 webhook pushes per hour on a standard account and answers 429
-above that. Twelve per hour is one every five minutes. There is no point
-anywhere in this system for machinery that reacts faster than the only output
-can change.
+The original choice was one output update every five minutes at most. TRMNL
+accepts 12 webhook pushes per hour on a standard account and answers 429 above
+that; twelve per hour is one every five minutes.
 
-That single number removes a great deal of design. No streaming, no
-sub-second update path, no realtime pipeline. It also means the difference
-between HTTP polling and a live MQTT subscription is much smaller than it looks:
-both are sampled at five minutes before anything reaches a screen.
-
-The bridge pushes when the payload changed, plus a heartbeat push when it has
-not, so the freshness stamp on the display stays honest.
+That number removed streaming, sub-second output paths, and realtime delivery
+from the bridge and cron. The marketplace conversion later let TRMNL request
+markup on the user's chosen schedule, but those requests read a stored payload
+and never increase Bambu traffic. The bridge still pushes when the payload
+changed, plus a heartbeat when it has not, so the freshness stamp remains honest.
 
 ## D5. One plugin holds every printer you chose
 
-**Chosen.** A single TRMNL Private Plugin whose payload carries an array of
-printers. The four views render one, two or three of them at different
-densities.
+**Chosen.** One TRMNL plugin installation carries an array of printers. For
+self-hosting that installation is a Private Plugin; for hosted use it is the
+marketplace plugin. The four views render one, two, or three printers at
+different densities.
 
 **Rejected:** one plugin per printer. It multiplies the setup the user has to
 do by the number of printers they own, spends a separate rate-limit budget per
@@ -106,18 +105,20 @@ offline — and says how many it left out.
 
 ## D6. Hosted runs on a cron, not on a socket
 
-**Chosen.** A Cloudflare Worker with a five-minute Cron Trigger, reading from
-Neon, pushing to TRMNL. No Durable Objects and no persistent connections in the
-first hosted version, which follows directly from D3 and D4.
+**Chosen.** A Cloudflare Worker uses a five-minute Cron Trigger to read Bambu
+HTTP and store a normalized payload in Neon. TRMNL's marketplace requests read
+that payload and receive server-rendered markup. No Durable Object or persistent
+connection runs in the Worker.
 
 An open TCP socket inside a Durable Object keeps that object resident and
 billable for up to 15 minutes per connection, and a persistent connection per
-user is a standing liability against a cloud service that has previously
-temporarily banned accounts for excessive concurrent MQTT connections. A cron
-that wakes, reads HTTP, and exits has none of that.
+user is a standing liability against a cloud service that has temporarily banned
+accounts for excessive concurrent MQTT connections. A cron that wakes, reads
+HTTP, stores, and exits has none of that.
 
-MQTT can be added to the hosted tier later without changing the contract,
-because D2 made the client portable. It is not needed for the product to work.
+MQTT enrichment was later added through the optional collector in D18 rather
+than through persistent Worker connections. The HTTP cron remains the fallback,
+so the product still works without the collector.
 
 ## D7. Self-hosting shares the code and shares nothing else
 
@@ -154,8 +155,8 @@ enabled keep signing in by email code. If we later want the authenticator app
 back, it is an additive change.
 
 Source: `docs/RESOURCES.md` [22] and the ha-bambulab change dated 2026-08-01,
-read for behaviour only. Not yet confirmed against a real account — see
-`docs/PLAN.md` for what the owner needs to test.
+read for behaviour only. The emailed-code path was later confirmed against a
+real account; D14 records that result.
 
 ## D9. An access token is opaque until proven otherwise
 
@@ -182,10 +183,13 @@ LAN-only mode is precisely the setting that stops the printer talking to the
 cloud. That is stated plainly in the README rather than worked around.
 
 ## D11. Hosted is pulled by TRMNL; self-hosted pushes
+**Superseded by D19.** This was the previous hosted delivery design; it remains
+here because the credential and rate-limit reasoning informed the replacement.
 
-**Chosen.** The hosted tier serves a JSON endpoint that TRMNL fetches on the
-plugin's own schedule, using TRMNL's Polling strategy. The self-hosted bridge
-keeps pushing to a webhook.
+
+**Earlier choice.** The hosted tier served a JSON endpoint that TRMNL fetched on
+the plugin's own schedule using the Polling strategy. The self-hosted bridge
+continued pushing to a webhook.
 
 `docs/TRMNL-PLUGIN.md` originally ruled polling out, and its reasoning was
 sound at the time: TRMNL cannot reach a printer on someone's home network. That
@@ -214,15 +218,18 @@ The payload shape needs no change: TRMNL's polling reader wants merge variables
 at the root of the response, and `WebhookVariables` is already flat.
 
 ## D12. Users sign in with an identity provider, not a bare key
+**Superseded by D19.** The marketplace installation is now the hosted identity,
+so this provider and the polling key no longer exist.
 
-**Chosen.** The hosted sign-in goes through a hosted identity provider offering
-social and passwordless email, so the user clicks once rather than inventing
+
+**Earlier choice.** Hosted sign-in went through an identity provider offering
+social and passwordless email, so the user clicked once rather than inventing
 another password.
 
-**Rejected:** making the polling key the only identity. It is tempting, because
-it removes an entire account-creation step from a product whose whole promise is
-that there is nothing to set up. But `AGENTS.md` requires hosted identity to
-come from a provider, and that rule is not mine to trade away for convenience.
+**Rejected at the time:** making the polling key the only identity. It was
+tempting because it removed an account-creation step, but the project required
+hosted identity to come from a provider. That requirement was non-negotiable
+within the polling design.
 
 It is also the weaker design once the key has to live in a TRMNL form field: a
 capability that is simultaneously the credential and the account has nothing to
@@ -235,9 +242,13 @@ payload and nothing else — and the account behind it is owned by an
 authenticated identity that can rotate it, revoke it, and delete everything.
 
 ## D13. The rate ceiling sits before the query, not after it
+**Superseded in part by D19.** The marketplace conversion deleted the screen
+endpoint and account-key limiter. Its address-first principle remains in use for
+the anonymous `/trmnl/` surface.
 
-**Chosen.** `GET /v1/screen` is guarded by two Cloudflare rate-limit bindings:
 
+**Earlier choice.** `GET /v1/screen` was guarded by two Cloudflare rate-limit
+bindings:
 - **`SCREEN_ADDRESS_LIMITER`**, keyed by client address, consulted **before** the
   account lookup, and skipped entirely for an allowlisted address. 300 per
   minute per Cloudflare location.
@@ -245,9 +256,9 @@ authenticated identity that can rotate it, revoke it, and delete everything.
   after the account resolves. 120 per minute.
 
 **Placement is the entire decision, and the first version got it wrong.** That
-version counted only requests that *failed* to resolve, so that TRMNL — which
-always presents a valid key — could never be throttled by an address-keyed
-counter. It was reviewed and two faults came back, both real:
+version counted only requests that *failed* to resolve, so TRMNL — which always
+presented a valid key — could never be throttled by an address-keyed counter.
+The placement had two faults:
 
 - It bounded nothing. The counter sat *after* `accountByScreenKey`, so a refused
   request had already paid for its database query. The limiter changed a status
@@ -362,26 +373,23 @@ Bambu had refused is not needed.
 the second step needs from the first is the email address, which the browser
 already has, so there is no server-side login session.
 
-Nothing to expire, nothing to clean up, and no window where a half-finished
-login sits in our storage. A caller who fabricates the intermediate step gains
-nothing: they still need the code Bambu emailed to that address, and Bambu is
-the one that checks it.
+Nothing expires or needs cleanup, and no half-finished login sits in server
+storage. A caller who fabricates the intermediate step gains nothing: they still
+need the code Bambu emailed to that address, and Bambu checks it.
 
 What this *does* create is an open relay risk: without a gate, anyone could make
-Bambu email anyone, repeatedly. Two things close it. Every enrolment route
-requires a verified identity, so there is no anonymous path to it at all; and
-`ENROL_LIMITER` bounds one identity to ten attempts a minute, keyed by their
-owner tag. That limiter is also the "sign-up throttling" gate that `AGENTS.md`
-asks for, which previously could not exist because sign-up did not.
+Bambu email anyone repeatedly. Two things close it. Every enrolment route
+requires a valid short-lived management token for an installed TRMNL plugin, so
+there is no anonymous path; and `ENROL_LIMITER` bounds one installation to ten
+attempts a minute, keyed by its owner tag.
 
-**It fails closed, unlike every other limiter here.** The screen endpoint's
-ceilings fail open because a fault there costs only our own database work, and
-failing closed would blank every display at once. This one is the sole bound on
-how often we can make Bambu email somebody, so a fault must stop us rather than
-free us. The blast radius is small and asymmetric: new enrolment pauses, while
-every configured display keeps working because it polls a different route. An
-audit pointed out that reasoning by analogy from the screen endpoint had produced
-the wrong answer here, and it was right.
+**It fails closed, unlike the anonymous TRMNL address limiter.** The address
+limiter fails open because a fault there costs database work, while failing
+closed would stop markup for every installation. `ENROL_LIMITER` is the sole
+bound on how often the service can make Bambu send email, so a fault must stop
+enrolment rather than remove the bound. The blast radius is asymmetric: new
+enrolment pauses while already configured displays keep using the independent
+markup route.
 
 Two consequences worth stating. The binding is **required by the type**, not
 optional: it was optional so tests could omit it, which made the guarantee
@@ -398,10 +406,14 @@ not an accounting system, so this is a cost and nuisance guard rather than a
 quota.
 
 ## D16. The identity subject is stored as a keyed tag, never raw
+**Superseded by D19.** The raw identity-provider subject no longer exists. The
+current `owner_tag` is derived from the TRMNL installation id, while the keyed
+tag and key-separation reasoning below still applies.
 
-**Chosen.** An account's owner is stored as `owner_tag`, an HMAC-SHA256 of the
-identity provider's `sub` under a key derived from the token-encryption secret
-by HKDF with a distinct label. The raw subject is never written down.
+
+**Earlier choice.** An account's owner was stored as `owner_tag`, an HMAC-SHA256
+of the identity provider's `sub` under a key derived from the token-encryption
+secret by HKDF with a distinct label. The raw subject was never written down.
 
 **Why keyed rather than hashed.** Neon documents that `sub` is the
 `neon_auth.user.id` and shows UUID-shaped examples, but it does not document the
@@ -429,14 +441,16 @@ decision as much as a constraint — this plugin shows up to three printers on o
 screen, so a second account for the same person would be a second display.
 
 ## D17. Sessions are verified locally against a published key set
+**Superseded by D19.** The marketplace install token replaced provider sessions,
+so there is no JWKS or hosted session verifier in the current system.
 
-**Chosen.** A signed-in browser sends a short-lived Ed25519 token; the Worker
-verifies it against the provider's JWKS with no network call to the provider on
-the request path. `iss` and `aud` are both the origin of `NEON_AUTH_BASE_URL`, so
-they are derived from one setting rather than configured separately, and there is
-no way to deploy a verifier that accepts tokens from somewhere else. Neon
-documents no introspection endpoint, and reading the session row out of Postgres
-would put a query on every enrolment request.
+
+**Earlier choice.** A signed-in browser sent a short-lived Ed25519 token; the
+Worker verified it against the provider's JWKS with no provider call on the
+request path. `iss` and `aud` were both derived from the origin of
+`NEON_AUTH_BASE_URL`, preventing a verifier from accepting tokens from another
+issuer. Neon documented no introspection endpoint, and reading the session row
+from Postgres would have put a query on every enrolment request.
 
 Four choices inside that, each with a cheap wrong version:
 
@@ -447,12 +461,12 @@ Four choices inside that, each with a cheap wrong version:
   unknown `kid` is the documented way to pick up a rotation, and left there it is
   also a way for anyone to command one outbound request per forged token. So a
   miss refetches at most once every thirty seconds, which makes a rotation
-  invisible while bounding the abuse to two requests a minute. An audit measured
-  that bound rather than reading it and found it false: the floor exempted an
-  empty key cache, so a provider that never yielded a usable key gave every
-  forged token its own outbound fetch. The floor is now unconditional, and a
-  regression test presents twenty forged ids against a failing provider and
-  asserts one fetch. The five-minute
+  invisible while bounding the abuse to two requests a minute. Runtime
+  measurement found the original bound was false: the floor exempted an empty
+  key cache, so a provider that never yielded a usable key gave every forged
+  token its own outbound fetch. The floor became unconditional, and a regression
+  test presents twenty forged ids against a failing provider and asserts one
+  fetch. The five-minute
   staleness TTL is a separate number: a key we already hold keeps working past
   it, because treating it as an expiry would reject live sessions whenever the
   provider was briefly unreachable.
@@ -489,21 +503,21 @@ an absent one, so the surface answers `404` and exposes nothing; only `http` and
 `https` are accepted, because `file:` and `data:` would otherwise parse and then
 be fetched.
 
-The lesson is the one the charter already states: a unit test that never touches
-the runtime is not evidence about the runtime. Worth being concrete about the
-consequence for tests, too. The obvious regression test for the second bug —
-present a short signature — passes with the fix reverted, because Vitest runs
-under Node and Node does not throw. An audit caught that. The test that actually
-guards it forces the throw by replacing `crypto.subtle.verify`, and was checked
-by reverting the fix and confirming it fails.
+The lesson is the one the project rules already state: a unit test that never
+touches the runtime is not evidence about the runtime. The obvious regression
+test for the second bug — presenting a short signature — passes with the fix
+reverted because Vitest runs under Node and Node does not throw. The effective
+test forces the throw by replacing `crypto.subtle.verify`; reverting the fix
+confirms that it fails.
 
-## D18. Public surface on Cloudflare, MQTT on hardware we own
+## D18. Public surface on Cloudflare, MQTT on operator-controlled hardware
 
 **Chosen.** The hosted tier keeps its public surface on Cloudflare — the setup
-page, `GET /v1/screen`, the rate ceilings, the identity check — and gains an
-always-on *collector* running in a container on a machine the operator owns. The
-collector holds one MQTT session per hosted account and writes the same `screens`
-rows the cron writes. See `docs/COLLECTOR.md`.
+page, TRMNL's install, management, markup, and uninstall routes, the rate
+ceilings, and per-installation token verification — and uses an always-on
+*collector* running in a container on a machine the operator controls. The
+collector holds one MQTT session per hosted account and writes the same
+normalized `screens` rows as the cron. See `docs/COLLECTOR.md`.
 
 **The problem it solves.** Bambu's HTTP interface carries no progress, layer,
 remaining time or temperature; those come over MQTT, and MQTT wants a socket held
@@ -563,14 +577,13 @@ that caused the outage it was guarding against.
 
 **And a session has to be closable, which was the second thing measured.** The
 lock is necessary but not sufficient: losing it has to end the MQTT sessions,
-because the lock is already gone by the time a heartbeat notices and a standby is
-free to take over. The first implementation discarded the stop handle the MQTT
-provider returns, so a collector that lost its lease kept its connections and
-kept writing rows that were no longer its to write — the very condition the lease
-exists to prevent, reached through the lease's own failure path. It survived
-review because the orchestration lived in the entrypoint, where nothing could
-call it; it is now `collector/src/supervise.ts`, which is why that module exists
-at all.
+because the lock is already gone by the time a heartbeat notices and a standby
+is free to take over. The first implementation discarded the stop handle the
+MQTT provider returns, so a collector that lost its lease kept its connections
+and kept writing rows that were no longer its to write — the very condition the
+lease exists to prevent, reached through the lease's own failure path. The
+orchestration now lives in `collector/src/supervise.ts`, where its stop behavior
+can be exercised directly.
 
 **Checked rather than assumed.** The hosted data layer runs in plain Node without
 modification: `store-neon.ts` and `crypto.ts` were imported into a Node 24
@@ -599,10 +612,8 @@ and `hosted/src/markup.ts` is the renderer.
 **What it deleted.** The entire identity apparatus: Neon Auth (email, password,
 verification codes, JWKS verification in `session.ts`) and the screen key with
 its rotation, fingerprints and polling endpoint. A user now installs, signs in
-to Bambu with an emailed code, picks printers, done — no account of ours, no
-credential to paste into TRMNL, no key to lose. The install handshake *is* the
-sign-in, which is as close to the charter's "sign-in-and-done" as the platform
-allows.
+to Bambu with an emailed code, and picks printers — no separate account, no
+credential to paste into TRMNL, and no key to lose.
 
 **The token is treated like the screen key was.** Stored only as a keyed HMAC
 tag; a database leak yields nothing replayable. The setup page gets its own
@@ -622,9 +633,9 @@ fingerprints, the no-oracle 404 discipline — for a credential with no remainin
 legitimate holder. The self-hosted tier never used any of it; its webhook plugin
 is untouched.
 
-**Not verifiable without the owner.** The three seams to TRMNL's real servers:
-the live code exchange, the real success webhook, and TRMNL's real markup POST.
-Everything on our side of each seam is driven by tests with TRMNL's documented
-request shapes, and the whole flow ran against real Postgres. The management-URL
-question — whether TRMNL passes anything identifying to it — is recorded in
-`docs/HANDOFF.md` as the one known unknown, with a working fallback.
+**Not yet verified against TRMNL's production service.** Three external seams
+remain: the live code exchange, the installation-success webhook, and TRMNL's
+real markup POST. Everything on this side of each seam is driven by tests using
+TRMNL's documented request shapes, and the whole flow ran against real Postgres.
+The management route follows TRMNL's documented `?uuid=` flow and falls back to
+an explicit open-from-TRMNL state when the UUID is absent or unknown.

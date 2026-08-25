@@ -1,6 +1,6 @@
 # Research resources
 
-Research date: 2026-08-22, revised 2026-08-24. Re-check current docs before
+Research date: 2026-08-22, revised 2026-08-25. Re-check current docs before
 implementation because both TRMNL and Bambu interfaces change. Entries that
 applied only to a local-network transport were dropped when the project became
 cloud-only; see `docs/DECISIONS.md` D10.
@@ -14,8 +14,13 @@ cloud-only; see `docs/DECISIONS.md` D10.
 - [Liquid 101](https://help.usetrmnl.com/en/articles/10671186-liquid-101) — variables, loops, conditions, and filters.[5]
 - [Screen templating](https://docs.usetrmnl.com/go/private-plugins/templates.md) — base view structure and hosted framework assets.[6]
 - [TRMNL Framework](https://usetrmnl.com/framework) — current e-paper components, utilities, responsive behavior, devices, bit depths, and examples.[8]
-- [Plugin Recipes](https://help.usetrmnl.com/en/articles/10122094-plugin-recipes) — install versus fork, publishing, update behavior, and moderation.[9]
-- [Custom form builder](https://help.usetrmnl.com/en/articles/10513740-custom-plugin-form-builder) — YAML settings fields for future distribution.[10]
+- [Plugin Recipes](https://help.usetrmnl.com/en/articles/10122094-plugin-recipes) — sharing and installing Private Plugin configurations.[9]
+- [Custom form builder](https://help.usetrmnl.com/en/articles/10513740-custom-plugin-form-builder) — fields available to Private Plugins.[10]
+- [Marketplace plugin creation](https://docs.trmnl.com/go/plugin-marketplace/plugin-creation.md) — URLs required when registering a third-party plugin.[24]
+- [Marketplace installation flow](https://docs.trmnl.com/go/plugin-marketplace/plugin-installation-flow.md) — single-use install code, token exchange, callback, and success webhook.[25]
+- [Marketplace management flow](https://docs.trmnl.com/go/plugin-marketplace/plugin-management-flow.md) — management redirect UUID and return-to-TRMNL behavior.[26]
+- [Marketplace screen generation](https://docs.trmnl.com/go/plugin-marketplace/plugin-screen-generation-flow.md) — authenticated markup requests and the four HTML response keys.[27]
+- [Marketplace uninstallation flow](https://docs.trmnl.com/go/plugin-marketplace/plugin-uninstallation-flow.md) — authenticated teardown webhook.[28]
 
 ## TRMNL — official code
 
@@ -62,10 +67,11 @@ See the licence table in `AGENTS.md`.
 | How often may we connect before Bambu objects? | MQTT limitations notice.[23] |
 | Which status fields matter to users? | ha-bambulab entities.[19] |
 | Why surface both HMS and print error? | OpenBambuAPI + ha-bambulab triggers.[15][20] |
-| How does data reach TRMNL? | Private Plugins + Webhooks.[2][3] |
+| How does the self-hosted bridge reach TRMNL? | Private Plugins + Webhooks.[2][3] |
+| How does the hosted tier integrate with TRMNL? | Marketplace installation, management, screen generation, and uninstallation.[25][26][27][28] |
 | How often may the bridge push? | TRMNL Webhooks + Refresh Rates.[3][4] |
 | How are screens developed locally? | trmnlp + Framework.[7][8] |
-| How can this become shareable later? | Recipes + form builder.[9][10] |
+| What must a hosted marketplace plugin register? | Marketplace plugin creation.[24] |
 
 ## Sources
 
@@ -92,3 +98,8 @@ transport and were dropped.
 [21] https://github.com/bambulab/BambuStudio — Bambu Studio source repository
 [22] https://github.com/Doridian/OpenBambuAPI/blob/main/cloud-http.md — OpenBambuAPI Cloud HTTP protocol notes
 [23] https://forum.bambulab.com/t/bambu-lab-mqtt-limitations/83440 — Bambu Lab MQTT limitations notice
+[24] https://docs.trmnl.com/go/plugin-marketplace/plugin-creation.md — TRMNL marketplace plugin creation
+[25] https://docs.trmnl.com/go/plugin-marketplace/plugin-installation-flow.md — TRMNL marketplace installation flow
+[26] https://docs.trmnl.com/go/plugin-marketplace/plugin-management-flow.md — TRMNL marketplace management flow
+[27] https://docs.trmnl.com/go/plugin-marketplace/plugin-screen-generation-flow.md — TRMNL marketplace screen generation
+[28] https://docs.trmnl.com/go/plugin-marketplace/plugin-uninstallation-flow.md — TRMNL marketplace uninstallation flow

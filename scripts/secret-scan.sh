@@ -34,7 +34,7 @@ esac
 # Paths that are allowed to describe forbidden patterns without containing them.
 is_exempt() {
   case "$1" in
-    scripts/secret-scan.sh|.githooks/*|.omp/agents/*|.omp/extensions/*) return 0 ;;
+    scripts/secret-scan.sh|.githooks/*) return 0 ;;
     docs/*|AGENTS.md|README.md) return 0 ;;
     *) return 1 ;;
   esac

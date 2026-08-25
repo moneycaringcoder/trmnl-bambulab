@@ -1,134 +1,128 @@
 # The TRMNL plugin
 
-These templates support the self-hosted Webhook tier and the hosted Polling
-tier.
+The Liquid templates under `../src/` are the single design source for both
+tiers:
 
-## Self-hosted install
+- The self-hosted bridge pushes variables to a TRMNL Private Plugin using the
+  Webhook strategy, and TRMNL renders the templates.
+- The hosted TRMNL marketplace plugin stores the same variables, renders the
+  four templates with liquidjs in the Worker, and returns the HTML from
+  `POST /trmnl/markup`.
+
+The hosted tier is not a polling Private Plugin. It has no Recipe, screen key,
+polling endpoint, or separate identity provider. See `TRMNL-PLUGIN.md` for the
+installation and request contracts.
+
+## Self-hosted installation
 
 Create a TRMNL Private Plugin with the **Webhook** strategy. Copy its webhook URL
-and paste it into `bridge/.env`, then run the bridge.
+into `bridge/.env`, then run the bridge. `src/settings.yml` describes this
+plugin and deliberately omits its remote id.
 
-## Hosted install
+## Hosted installation
 
-Install the Recipe and paste one value into its form: the screen key. This path
-is **not installable yet** because hosted enrolment has not been deployed, so
-nobody can obtain a screen key today.
+Install the third-party plugin from the TRMNL marketplace. TRMNL redirects the
+browser through the install handshake, after which the setup page asks for a
+Bambu email code and lets the user choose printers. There is no credential to
+copy between services.
 
-## What the payload looks like
+## Payload
 
-One object, described in `bridge/src/types.ts` as `WebhookVariables`:
+`bridge/src/types.ts` defines the normalized display payload. The canonical
+sample is `../bridge/fixtures/merged/printing.synthetic.json`:
 
 ```json
 {
   "v": 1,
-  "updated_at": "2026-01-01T09:41Z",
-  "printers": [{ "state": "printing", "name": "Workshop A1", "progress": 96 }],
+  "updated_at": "2026-01-01T00:00Z",
+  "printers": [
+    {
+      "state": "printing",
+      "name": "Demo Printer",
+      "progress": 42,
+      "layer": 81,
+      "layers": 194,
+      "remaining": "1h 16m"
+    }
+  ],
   "hidden": 0,
   "cloud": "connected"
 }
 ```
 
-At most three printers, ordered so the one that needs attention is first. Keys
-whose value is null are **absent** from the body, so every optional value has
-to be guarded. `bridge/fixtures/merged/printing.synthetic.json` is the canonical
-sample and is what the preview config renders.
+A payload contains at most three printers, ordered so the printer needing
+attention comes first. The compact serializer omits keys whose value is `null`,
+so every optional field must be guarded in Liquid. Raw Bambu HTTP and MQTT
+objects never reach the templates.
+
+The hosted cron provides the honest HTTP subset. The optional collector enriches
+that stored payload with MQTT progress, remaining time, layers, temperatures,
+filament, and alerts. The self-hosted bridge receives both sources directly.
+The templates therefore treat every enriched value as optional rather than
+maintaining separate hosted and self-hosted markup.
 
 ## Previewing
 
-Ruby is not required; the official container does everything.
+Run the official container from the repository root; Ruby is not required:
 
 ```sh
-docker run --rm -v "$PWD/plugin:/plugin" trmnl/trmnlp:latest lint
-docker run --rm -v "$PWD/plugin:/plugin" trmnl/trmnlp:latest build --png
-docker run --rm -p 4567:4567 -v "$PWD/plugin:/plugin" trmnl/trmnlp:latest serve
+cp .trmnlp.yml.example .trmnlp.yml
+docker run --rm -v "$PWD:/plugin" trmnl/trmnlp:latest lint
+docker run --rm -v "$PWD:/plugin" trmnl/trmnlp:latest build --png
+docker run --rm -p 4567:4567 -v "$PWD:/plugin" trmnl/trmnlp:latest serve
 ```
 
-`build --png` writes `_build/*.html` and `_build/*.png` at the real 800x480,
-1-bit. That directory is git-ignored.
+`build --png` writes ignored `_build/*.html` and `_build/*.png` files at the
+real 800x480, 1-bit output size. Edit the ignored `.trmnlp.yml` `variables:`
+block to exercise one or three printers, idle, printing, failure, offline, and
+stale states.
 
-Sample data comes from `.trmnlp.yml`, which is git-ignored because a developer
-may later add an API key. Copy `.trmnlp.yml.example` to start, and edit its
-`variables:` block to try other cases — one printer, three printers, a failure,
-a stale reading. Those all take different branches and all four were checked
-this way.
+Do not run `trmnlp push`, `login`, `pull`, `clone`, or `list` unless you intend
+to authenticate to and change plugins in your own TRMNL account. A local sync
+may add an `id` to `src/settings.yml`; never commit that id.
 
-Do not run `trmnlp push`, `login`, `pull`, `clone` or `list`. Those need the
-owner's TRMNL credentials and their plugin id.
+## Views
 
-## The views
-
-`half_horizontal`, `half_vertical` and `quadrant` are not one printer per cell.
-They are alternative renderings of the *same* payload, used when the plugin
-shares a screen with another plugin, so each one has to handle one, two or three
-printers at its own density.
+`half_horizontal`, `half_vertical`, and `quadrant` are not one printer per cell.
+They are alternative renderings of the same payload when the plugin shares a
+screen with another plugin, so each layout handles one, two, or three printers
+at its own density.
 
 | View | Shows |
 | --- | --- |
-| `full` | Headline percentage, printer and state, a full-width rail, and remaining, layer, nozzle, bed and filament. At three printers the figures collapse onto the state line so nothing is clipped. |
-| `half_horizontal`, `half_vertical` | Printer, state, percentage, rail, remaining and layer. |
-| `quadrant` | Percentage or state word, remaining, and an alert marker. Little else fits. |
+| `full` | Headline percentage or state, printer, progress rail, remaining time, layer, nozzle, bed, and filament. With three printers the figures collapse onto the state line so the view does not clip. |
+| `half_horizontal`, `half_vertical` | Printer, state, percentage, rail, remaining time, and layer. |
+| `quadrant` | Percentage or state, remaining time, and an alert marker. |
 
-Only `full` carries a title bar. On a shared screen a permanent bar costs more
-room than it earns, so the smaller views show a short note instead, and only
-when there is something the viewer could not otherwise work out.
+Only `full` carries a title bar. A permanent bar costs too much space in a
+Mashup, so smaller views show a short note only when the viewer could not infer
+the condition from the printer rows.
 
-## Rules these templates follow
+## Template rules
 
 - **No invented numbers.** An idle printer shows its name and that it is ready.
-  It gets no progress rail, no zero percentage and no empty layer counter,
-  because the bridge sends no such values and a template must not supply them.
-- **Stale is not idle, and neither is offline.** A stale reading is the bridge's
-  fault rather than the printer's, so those states show a dash instead of a
-  headline number and say the reading is old. Presenting the last known figures
-  at headline size would present them as current.
-- **A failure keeps its numbers.** "Failed at layer 141 of 300" is the useful
-  part of a failure.
-- **1-bit first.** No colour-only meaning, no opacity, no fine grey, no photo,
-  no animation. A numeric percentage always sits next to the rail, because a bar
-  alone is hard to read at a glance on e-paper.
-- **Nothing identifying.** No serial, no device id, no webhook URL. The payload
-  does not contain them, and a job name appears only if the owner turned that
-  on.
+  It gets no progress rail, zero percentage, or empty layer counter.
+- **Stale is not idle, and neither is offline.** An old reading shows a dash and
+  an explicit stale message rather than presenting the last figures as current.
+- **A failure keeps known numbers.** The layer at which a print failed remains
+  useful.
+- **1-bit first.** No colour-only meaning, opacity, fine gray, photographs, or
+  animation. A numeric percentage sits beside its rail because a bar alone is
+  hard to read at a glance.
+- **Nothing identifying.** No serial, device id, installation id, token, or
+  webhook URL. A job name appears only when the user enabled its export.
 
-## Framework notes worth knowing before editing
+## Framework details
 
-Two properties of the design system caused real bugs while building this, both
-worth knowing before restructuring anything:
+Two TRMNL framework properties matter when changing the layout:
 
-- `.layout` carries `container-type: size`, which means its own contents do not
-  contribute to its height. A `.layout` that no parent is stretching therefore
-  collapses to nothing and its children vanish. Use `.list` for a plain vertical
-  stack and `.grid` for even columns.
-- `.item` is a flex row with `line-height: 0`, and expects `.content` as its
-  direct children. Nesting a layout inside one collapses it. The gap between
-  sibling `.content` boxes is two pixels, which runs adjacent figures together,
-  so a row of separate figures wants `.grid`, not one `.item`.
+- `.layout` carries `container-type: size`, so its contents do not contribute to
+  its height. If no parent stretches it, it collapses and its children vanish.
+  Use `.list` for a plain vertical stack and `.grid` for even columns.
+- `.item` is a flex row with `line-height: 0` and expects `.content` as direct
+  children. A nested layout can collapse. Adjacent `.content` boxes have a
+  two-pixel gap, so separate figures belong in a `.grid` rather than one item.
 
-Type sizes are chosen against the height each block actually gets: about 430px
-of content once the title bar is out. The headline is 220px for one printer,
-74px for two and 58px for three.
-
-## What each tier can actually show
-
-Confirmed by rendering both payload shapes, not by reasoning about them.
-
-| | Self-hosted | Hosted |
-| --- | --- | --- |
-| Printer name | yes | yes |
-| Idle or printing | yes | yes |
-| Progress percentage and rail | yes | no |
-| Time remaining | yes | no |
-| Layer and layer count | yes | no |
-| Nozzle and bed temperature | yes | no |
-| Filament | yes | no |
-
-The hosted column is short because Bambu's HTTP interface does not carry those
-fields; they come over MQTT, which the bridge subscribes to and the Worker does
-not. See `docs/DECISIONS.md` D3.
-
-The views are written so an absent field leaves nothing behind rather than
-rendering a zero, which is what makes one set of templates serve both tiers. Two
-redundancies that only showed up on real data have been removed: the state was
-printed twice whenever there was no percentage to headline, which is every hosted
-screen, and Bambu's stage for a running print is often the word "Printing", which
-is the state as well.
+Type sizes are chosen against the roughly 430 pixels left after the full view's
+title bar. The one-printer headline is 220 pixels, the two-printer headline 74,
+and the three-printer headline 58.

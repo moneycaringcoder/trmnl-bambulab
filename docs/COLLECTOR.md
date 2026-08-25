@@ -1,28 +1,26 @@
 # The collector
 
-**Status: built, and verified except against a real Bambu account.** The lease,
-the orchestration and the render path are covered by tests, and have also been
-exercised as real processes against real Postgres and the real Bambu Cloud API:
-the pooled-endpoint refusal, the two-instance handoff, and an enrolled account
-whose token the cloud rejected. What has never happened is a session with a
-*valid* token, because that needs the owner's credentials.
+**Status: built and verified except for one live seam.** The lease,
+orchestration, and render path are covered by tests and have been exercised as
+real processes against Postgres and the Bambu Cloud failure path. The
+pooled-endpoint refusal and two-instance failover have also been observed. A
+collector session using a valid stored Bambu token has not yet been exercised
+end to end, so that seam remains explicitly unverified.
 
-The container was built and started: it runs as `node`, `uid=1000`, exposes no
-port, bakes no secret, and under `--read-only --cap-drop=ALL
---security-opt=no-new-privileges` it starts, reports a missing `DATABASE_URL`
-and exits 78 — so no writable filesystem is needed. What has not been done is
-running it on the owner's Proxmox host, so the LXC guidance below is reasoned
-from the sizing measurements rather than observed there.
+The container has been built and started. It runs as `node`, `uid=1000`, exposes
+no port, bakes no secret, and needs no writable filesystem. Under `--read-only
+--cap-drop=ALL --security-opt=no-new-privileges` it reports a missing
+`DATABASE_URL` and exits 78 as designed. The image has not been run inside a
+Proxmox LXC, so the LXC guidance below is based on measured resource use rather
+than an observed Proxmox deployment.
 
-One defect found by audit is worth recording here rather than only in the git
-history, because it is the failure this component is most able to cause. The
-first version could not stop a live MQTT session: it discarded the broker's stop
-handle, so a collector that lost its lease kept its connections and kept writing
-rows a standby had already taken over — two MQTT connections on one Bambu
-account, which is what Bambu bans for. It reached review because the
-orchestration lived in the entrypoint and had no tests. It now lives in
-`collector/src/supervise.ts`, and four tests fail if the stop handle is dropped
-again.
+The collector must close every live MQTT session as soon as it loses the lease.
+An earlier implementation discarded the broker's stop handle, so a collector
+that lost its lease kept its connections and continued writing rows after a
+standby took over. That creates two MQTT connections on one Bambu account, the
+condition this lease exists to prevent. The orchestration now lives in
+`collector/src/supervise.ts`, where four tests fail if the stop handle is
+dropped again.
 
 This document records the design, the measurements, and the operations guide for
 the machine that runs it. Where a number is measured rather than estimated, it
@@ -30,56 +28,55 @@ says so.
 
 ## What it is for
 
-The hosted tier and the self-hosted bridge do not show the same amount, and the
-reason is not a defect. Bambu's HTTP interface carries a printer's name, whether
-it is online, and whether it is printing. It does not carry progress, layer
-count, time remaining, or temperature. Those arrive over MQTT.
+The five-minute hosted cron reads Bambu's HTTP interface. That interface gives
+enough data for an honest basic status, but the richer progress, layer, remaining
+time, temperature, filament, and alert fields arrive over MQTT.
 
-The bridge subscribes to MQTT because it runs on a machine that is always on. A
-Cloudflare Worker cannot: it is a cron that wakes, works, and dies, and MQTT
-wants a socket held open. So a hosted printer reads `Printing` over its name and
-nothing else, while the same printer on the bridge reads `42%` with a rail,
-remaining time, layer, temperatures and filament.
-
-The collector closes that gap by being the always-on machine, for people who are
-not running a bridge themselves.
+The self-hosted bridge can hold an MQTT subscription because it runs as an
+always-on process. A Cloudflare cron invocation cannot hold that socket between
+runs. The collector closes the gap for hosted installations by keeping one
+subscribe-only MQTT connection per enrolled Bambu account. It is optional:
+without it, the hosted tier continues at HTTP fidelity.
 
 ## Shape
 
-```
-Bambu MQTT ──────► collector (LXC) ──────► Neon
-                                             ▲
-TRMNL ──────► Cloudflare Worker ─────────────┘
+```text
+Bambu MQTT ──────► collector ──────► Neon
+                                         ▲
+Bambu HTTP ──────► Worker cron ──────────┘
+                                         │
+TRMNL ───────────► Worker markup route ──┘
 ```
 
 The collector makes **only outbound connections**: to Bambu over HTTPS and MQTT
 on 8883, and to Neon over HTTPS and direct Postgres. It listens on nothing.
-There is no tunnel, no port forward, and no inbound path from the internet to
-the machine running it. Cloudflare remains the public surface, with the rate
-ceilings and key checks already built.
+There is no tunnel, port forward, or inbound path from the internet to the
+machine running it. Cloudflare remains the public surface, with rate ceilings
+and per-installation token checks.
 
-It writes the same `screens` rows the Worker's cron writes, in the same shape.
-The Worker needs no change at all: `GET /v1/screen` already serves whatever is
-in that table.
+The collector writes the same `screens` rows as the Worker cron, in the same
+normalized JSON shape. `POST /trmnl/markup` reads the stored payload and the
+Worker renders all four `src/*.liquid` layouts through liquidjs. The collector
+does not serve TRMNL traffic and does not render HTML itself.
 
 ## The one interaction that needs care
 
-Two writers to one table. The cron renders from HTTP every five minutes; the
-collector renders from MQTT whenever a printer reports. If both write freely,
-the display flickers between a rich render and a thin one.
+Two writers share one table. The cron stores an HTTP payload every five minutes;
+the collector stores an MQTT-enriched payload when printer reports arrive. If
+both write freely, the display flickers between a rich view and a thin one.
 
-**The cron writes only when the stored render is already stale.** It compares
-`rendered_at` against its own freshness window and skips accounts a collector
-has touched recently. No new column, no precedence engine, no coordination
-between the two processes.
+**The cron writes only when the stored payload is already stale.** It compares
+`rendered_at` against its freshness window and skips accounts a collector has
+touched recently. No new column, precedence engine, or coordination between the
+two processes is needed.
 
 That ordering is deliberate, and it is what makes the collector optional:
 
 - Collector up: it writes often and richly, the cron finds fresh rows and skips.
 - Collector down: rows go stale, the cron resumes, and the display falls back to
   HTTP fidelity rather than going blank.
-- Both down: the screen endpoint keeps serving the last render and reports its
-  age, which is what `FRESH_FOR_MS` is for.
+- Both writers down: the markup route keeps rendering the last stored payload,
+  whose update time makes its age visible.
 
 Availability therefore never gets worse than the cron-only tier that exists
 today. That is the property worth protecting, and it is why the collector must
@@ -159,8 +156,8 @@ constraint. In order, the real ones are:
    is the thing to avoid, and the bridge already learned that lesson the hard
    way: see `docs/DECISIONS.md`.
 
-A GPU is of no use here. There is no inference and no image work — TRMNL renders
-the screen from our JSON on its own servers.
+A GPU is of no use here. There is no inference or image work: the Worker renders
+the stored variables into HTML, and TRMNL turns that markup into an e-paper image.
 
 ## Deployment and operations
 
@@ -266,36 +263,36 @@ because a container that exits cleanly is not restarted by the `on-failure`
 policy above, and the next person to enrol would then get no live telemetry
 until somebody noticed.
 
-A second instance is safe and is the way to restart without a collection gap:
+A second instance is safe and provides a restart without a collection gap:
 start the replacement, wait for its standby line, then stop the old instance.
 The replacement takes the lease as soon as the old Postgres connection drops.
-There is no coordination step, timeout or local state to carry over.
+There is no coordination step, timeout, or local state to carry over.
 
 When the collector is down, rich MQTT figures stop updating. The cron resumes
-writing the HTTP-only name and state view within five minutes, so displays
-degrade but do not blank. The screen endpoint continues serving the last render
-and its age even during the handoff. This fallback is why the cron remains in
-place rather than being replaced by the collector.
+writing the HTTP-only payload within five minutes, so displays degrade but do
+not lose their basic printer status. The markup route keeps rendering the latest
+stored payload throughout collector failover. This fallback is why the cron
+remains in place rather than being replaced by the collector.
 
 ## Failure modes
 
 | What fails | What a user sees |
 | --- | --- |
-| One MQTT session drops | That printer's figures stop updating; the cron refreshes it at HTTP fidelity within five minutes |
-| The collector stops | Every hosted display falls back to HTTP fidelity, name and state only |
-| The host stops | Same, because the cron is still running on Cloudflare |
-| Neon unreachable | The Worker serves the last render and reports its age |
-| A user's token is refused | That account is flagged for re-authentication and skipped, rather than retried into a ban |
+| One MQTT session drops | That printer's rich figures stop updating; the cron refreshes it at HTTP fidelity within five minutes |
+| The collector stops | Every hosted display falls back to HTTP fidelity |
+| The collector host stops | Same, because the cron is still running on Cloudflare |
+| Neon is unreachable | The markup request cannot load the stored payload and returns a service-unavailable response |
+| A user's token is refused | That account is flagged for re-authentication and skipped rather than retried into a ban |
 
-The shape of that table is the argument for this design: every row degrades, and
-none of them blanks a display.
+Collector-specific failures degrade to the cron-only service. Neon is a shared
+dependency of both the writers and the markup route, so its failure is not
+masked by the collector fallback.
 
 ## Before this carries anyone else's account
 
 - Disk encryption on the host, and a backup story that does not copy the key.
-- ~~The threat model in `SECURITY.md` extended to cover a self-operated
-  collector.~~ Done: see "A compromised collector host" there. It names the
-  obligations above rather than leaving them implied.
-- A decision on who is allowed to enrol. An open hosted tier whose telemetry is
-  collected on one person's hardware is a promise about uptime and privacy that
-  should be made deliberately, not by leaving the door open.
+- Keep the "A compromised collector host" threat in `SECURITY.md` current. It
+  records the obligations above rather than leaving them implicit.
+- Decide which installations may enrol before opening a self-operated hosted
+  tier. Collecting other people's telemetry on one operator's hardware is a
+  promise about uptime and privacy that should be made deliberately.

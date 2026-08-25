@@ -112,13 +112,15 @@ an account. What is left, in order:
    per-request log. Verified against a real throwaway Postgres: the migration
    applies, the delete cascade works, and a sealed token still opens after a
    database round trip.
-2. ~~**Sign-in and printer picker.**~~ **API done; no web page yet.** Six routes
-   behind a verified session: ask Bambu to email a code, exchange the code for a
-   token, list and choose printers, rotate the key, read the account, delete it.
-   The Bambu sign-in is passwordless, so a Bambu password never reaches this
-   service (D14). Nothing is kept between the two login steps (D15). What is
-   missing is the HTML: a person cannot use this from a browser until there is a
-   page, only from a client that can present a token.
+2. ~~**Sign-in and printer picker.**~~ **Done.** Six routes behind a verified
+   session, and a page at `/` that drives them: sign in, connect Bambu with an
+   emailed code, choose up to three printers, receive one key, then change
+   printers, rotate the key or delete everything. The Bambu sign-in is
+   passwordless, so a Bambu password never reaches this service (D14), and
+   nothing is kept between the two login steps (D15). Driven in a real browser
+   against the real identity provider and real Postgres, at desktop width and at
+   390px, including a hostile printer name that rendered as text rather than
+   executing.
 3. ~~**Identity.**~~ **Done and proven against the real provider.** Neon Auth is
    provisioned on the owner's project, with Google and email sign-in and email
    verification required on sign-up. A token from the real provider was accepted
@@ -145,8 +147,8 @@ an account. What is left, in order:
    plugin is the self-hosted webhook one. Publishing an Unlisted Recipe is an
    action in TRMNL's interface, so it is the owner's to take.
 
-What remains is a browser page for step 2, and publishing the recipe, which is a
-button in TRMNL's interface and therefore the owner's. Identity is no longer a
+What remains is publishing the recipe, which is a button in TRMNL's interface and
+therefore the owner's. Identity is no longer a
 blocker: it is provisioned and verified. Deploying the Worker is still the
 owner's call, and a trusted origin has to be registered with the provider once
 that deployment has a domain — `localhost` is allowed today so the page can be

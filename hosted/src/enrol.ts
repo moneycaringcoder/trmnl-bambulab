@@ -262,6 +262,17 @@ function fromCloudError(error: unknown): EnrolFailure {
           "Bambu Cloud's protection blocked this request. This usually clears on its own; " +
           "try again in a few minutes.",
       };
+    case "client-error":
+      // Bambu answered and said no. Observed with a wrong sign-in code, which
+      // comes back as a 4xx rather than a 401, so folding this into the
+      // unreachable case told someone who mistyped a code that the service was
+      // down — advice to wait when the right advice is to read the email again.
+      return {
+        kind: "refused",
+        guidance:
+          "Bambu Cloud did not accept that. If you were entering a code, use the newest " +
+          "email: they expire quickly.",
+      };
     default:
       return {
         kind: "cloud-unavailable",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { cycleLogDetail, screenHttpResponse } from "../src/worker.ts";
+import { cycleLogDetail, routeResponse, screenHttpResponse } from "../src/worker.ts";
 import type { ScreenOutcome } from "../src/screen.ts";
+import type { RouteResult } from "../src/routes.ts";
 import type { AccountCycleSummary } from "../src/cycle.ts";
 
 const TAG = "0123456789abcdef";
@@ -125,5 +126,56 @@ describe("screenHttpResponse", () => {
     // Per-device refresh, per account, forever: caching one render would freeze
     // every display sharing an edge.
     expect(response.headers.get("Cache-Control")).toBe("no-store");
+  });
+});
+
+describe("routeResponse", () => {
+  // The page reads status codes to decide what to show, so each one is part of
+  // the contract between the two halves rather than an implementation detail.
+  it("maps every route decision to the status the page expects", async () => {
+    const cases: [RouteResult, number][] = [
+      [{ kind: "done" }, 204],
+      [{ kind: "printers", printers: [] }, 200],
+      [{ kind: "key-issued", screenKey: "k" }, 200],
+      [{ kind: "account", deviceIds: [], reauthRequired: false }, 200],
+      [{ kind: "unauthenticated" }, 401],
+      [{ kind: "no-account" }, 404],
+      [{ kind: "throttled" }, 429],
+      [{ kind: "invalid", guidance: "g" }, 400],
+      [{ kind: "upstream", failure: { kind: "refused", guidance: "g" } }, 400],
+      [{ kind: "upstream", failure: { kind: "cloud-unavailable", guidance: "g" } }, 502],
+      [{ kind: "upstream", failure: { kind: "no-printers", guidance: "g" } }, 400],
+    ];
+
+    for (const [result, status] of cases) {
+      expect(routeResponse(result).status, JSON.stringify(result)).toBe(status);
+    }
+  });
+
+  it("never caches an authenticated answer", () => {
+    const results: RouteResult[] = [
+      { kind: "done" },
+      { kind: "key-issued", screenKey: "k" },
+      { kind: "account", deviceIds: [], reauthRequired: false },
+      { kind: "unauthenticated" },
+      { kind: "throttled" },
+    ];
+    for (const result of results) {
+      expect(routeResponse(result).headers.get("Cache-Control")).toBe("no-store");
+    }
+  });
+
+  // The one response that carries a key, and the only one.
+  it("carries a screen key in exactly one response shape", async () => {
+    const issued = await routeResponse({ kind: "key-issued", screenKey: "secret-key-value" }).text();
+    expect(JSON.parse(issued)).toEqual({ screen_key: "secret-key-value" });
+    const quiet: RouteResult[] = [
+      { kind: "done" },
+      { kind: "account", deviceIds: ["d"], reauthRequired: false },
+      { kind: "printers", printers: [] },
+    ];
+    for (const result of quiet) {
+      expect(await routeResponse(result).text()).not.toContain("secret-key-value");
+    }
   });
 });

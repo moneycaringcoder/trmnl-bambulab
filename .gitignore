@@ -39,3 +39,12 @@ bridge/spikes/*
 # Local dependency and build output
 bridge/dist/
 plugin/_build/
+
+# Browser-driven verification leaves these behind, and a screenshot of the
+# setup page carries a Bambu email or a screen key in plain pixels.
+.playwright-mcp/
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.har

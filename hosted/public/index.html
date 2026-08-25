@@ -1,0 +1,1011 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Set up your printer display</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /*
+        A print is built one layer at a time, and so is this setup. The progress
+        indicator is therefore a layer stack that grows upward: finished steps
+        collapse into solid deposited bands, the step you are on is the layer
+        being laid down and carries a hot edge, and steps you have not reached
+        are hairline outlines. The order is real — you cannot pick printers
+        before signing in to Bambu — so encoding it as an accumulating stack is
+        true to the content rather than decoration on top of it.
+
+        Palette comes from the two objects involved: the grey of an e-paper
+        panel at rest, slicer green, and the amber of a hot nozzle. The amber
+        appears in exactly one place.
+      */
+      :root {
+        --ink: #1a1c1b;
+        --ink-soft: #4a4f4c;
+        --panel: #c9c8c0;
+        --panel-lit: #e6e5de;
+        --panel-line: #a9a8a1;
+        --green: #2f6155;
+        --green-lit: #3d7d6d;
+        --hot: #c2591f;
+        --bad: #8f2f22;
+
+        --step: clamp(0.85rem, 0.6rem + 0.6vw, 1rem);
+        --gap: clamp(1rem, 0.6rem + 1.4vw, 1.75rem);
+        --shell: 46rem;
+
+        --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+        --body: system-ui, -apple-system, "Segoe UI", sans-serif;
+        --data: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--panel);
+        color: var(--ink);
+        font: 400 var(--step) / 1.55 var(--body);
+        /* The faint horizontal ruling reads as the panel's own texture rather
+           than as a decorative pattern: it is the same pitch as a layer band. */
+        background-image: repeating-linear-gradient(
+          to bottom,
+          rgba(26, 28, 27, 0.035) 0 1px,
+          transparent 1px 6px
+        );
+        padding: var(--gap);
+      }
+
+      main {
+        max-width: var(--shell);
+        margin: 0 auto;
+      }
+
+      header {
+        margin-bottom: calc(var(--gap) * 1.5);
+      }
+
+      .eyebrow {
+        font: 500 0.72rem / 1 var(--data);
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--ink-soft);
+        display: flex;
+        align-items: center;
+        gap: 0.6em;
+      }
+
+      .eyebrow::after {
+        content: "";
+        flex: 1;
+        height: 1px;
+        background: var(--panel-line);
+      }
+
+      h1 {
+        font: 800 clamp(1.9rem, 1.2rem + 2.6vw, 3.1rem) / 1.02 var(--display);
+        font-variation-settings: "opsz" 72;
+        margin: 0.45em 0 0.3em;
+        letter-spacing: -0.02em;
+        max-width: 24ch;
+      }
+
+      .lede {
+        margin: 0;
+        max-width: 54ch;
+        color: var(--ink-soft);
+      }
+
+      /* Reading order wins over the physical metaphor. Deposited layers really
+         do stack upward, and rendering them that way put step 04 at the top of
+         the page: a reader scanned "04, 03, 02" before reaching the step they
+         were on. So the stack runs top-down instead — finished steps collapse
+         above, the step you are on sits below them, and the rest wait beneath.
+         The layer language survives in the bands themselves. */
+      #stack {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+      }
+
+      .layer {
+        border: 1px solid var(--panel-line);
+        background: transparent;
+        padding: 0.55rem 0.9rem;
+        display: grid;
+        grid-template-columns: 1.6rem 1fr auto;
+        align-items: baseline;
+        gap: 0.9rem;
+        font: 500 0.78rem / 1.4 var(--data);
+        color: var(--ink-soft);
+      }
+
+      .layer .n {
+        font-variant-numeric: tabular-nums;
+      }
+
+      .layer[data-state="done"] {
+        background: var(--ink);
+        border-color: var(--ink);
+        color: var(--panel-lit);
+      }
+
+      .layer[data-state="done"] .n {
+        color: var(--green-lit);
+      }
+
+      .layer[data-state="active"] {
+        display: block;
+        background: var(--panel-lit);
+        border-color: var(--ink);
+        border-top: 2px solid var(--hot);
+        padding: calc(var(--gap) * 0.8) var(--gap);
+        color: var(--ink);
+        font: 400 var(--step) / 1.55 var(--body);
+      }
+
+      .layer[data-state="pending"] {
+        opacity: 0.55;
+      }
+
+      .layer h2 {
+        font: 600 1.28rem / 1.15 var(--display);
+        margin: 0 0 0.15em;
+        letter-spacing: -0.01em;
+      }
+
+      .layer .head {
+        display: flex;
+        align-items: baseline;
+        gap: 0.7rem;
+        margin-bottom: 0.9rem;
+      }
+
+      .layer .head .n {
+        font: 500 0.78rem / 1 var(--data);
+        color: var(--hot);
+      }
+
+      .layer p {
+        margin: 0 0 1rem;
+        color: var(--ink-soft);
+        max-width: 52ch;
+      }
+
+      /* ---- controls ------------------------------------------------------ */
+
+      /* Scoped to `.field`, not bare `label`. A printer row *is* a label, so the
+         bare selector uppercased and mono-spaced every printer's name — the
+         element-selector collision the CSS in this file is otherwise arranged to
+         avoid. */
+      .field > label {
+        display: block;
+        font: 500 0.72rem / 1 var(--data);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ink-soft);
+        margin-bottom: 0.4rem;
+      }
+
+      .field {
+        margin-bottom: 1rem;
+      }
+
+      input,
+      select {
+        width: 100%;
+        font: 400 1rem/1.4 var(--body);
+        color: var(--ink);
+        background: #fff;
+        border: 1px solid var(--panel-line);
+        border-radius: 0;
+        padding: 0.6rem 0.7rem;
+      }
+
+      input[inputmode="numeric"] {
+        font: 500 1.3rem / 1.4 var(--data);
+        letter-spacing: 0.3em;
+      }
+
+      input:focus-visible,
+      select:focus-visible,
+      button:focus-visible,
+      a:focus-visible {
+        outline: 2px solid var(--green);
+        outline-offset: 2px;
+      }
+
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.6rem;
+        align-items: center;
+      }
+
+      button {
+        font: 500 0.9rem/1 var(--body);
+        padding: 0.7rem 1.1rem;
+        border: 1px solid var(--ink);
+        border-radius: 0;
+        background: var(--ink);
+        color: var(--panel-lit);
+        cursor: pointer;
+      }
+
+      button:hover:not(:disabled) {
+        background: var(--green);
+        border-color: var(--green);
+      }
+
+      button[data-kind="quiet"] {
+        background: transparent;
+        color: var(--ink);
+      }
+
+      button[data-kind="quiet"]:hover:not(:disabled) {
+        background: var(--ink);
+        color: var(--panel-lit);
+      }
+
+      button[data-kind="danger"] {
+        background: transparent;
+        border-color: var(--bad);
+        color: var(--bad);
+      }
+
+      button[data-kind="danger"]:hover:not(:disabled) {
+        background: var(--bad);
+        color: var(--panel-lit);
+      }
+
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+
+      /* ---- printer choices ---------------------------------------------- */
+
+      .printers {
+        display: grid;
+        gap: 0.4rem;
+        margin-bottom: 1rem;
+      }
+
+      .printer {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 0.8rem;
+        align-items: center;
+        border: 1px solid var(--panel-line);
+        padding: 0.7rem 0.8rem;
+        background: #fff;
+        cursor: pointer;
+      }
+
+      .printer:has(input:checked) {
+        border-color: var(--ink);
+        box-shadow: inset 3px 0 0 var(--green);
+      }
+
+      .printer input {
+        width: auto;
+        margin: 0;
+        accent-color: var(--green);
+      }
+
+      .printer .name {
+        font-weight: 600;
+      }
+
+      .printer .meta {
+        font: 400 0.75rem/1 var(--data);
+        color: var(--ink-soft);
+      }
+
+      .printer .meta[data-online="false"] {
+        color: var(--hot);
+      }
+
+      /* ---- the key ------------------------------------------------------- */
+
+      .key {
+        font: 500 1rem/1.5 var(--data);
+        word-break: break-all;
+        background: var(--ink);
+        color: var(--panel-lit);
+        padding: 0.9rem 1rem;
+        border-left: 3px solid var(--hot);
+        margin-bottom: 0.8rem;
+      }
+
+      .note {
+        font-size: 0.85rem;
+        color: var(--ink-soft);
+      }
+
+      /* ---- messages ------------------------------------------------------ */
+
+      .msg {
+        border-left: 3px solid var(--bad);
+        background: rgba(143, 47, 34, 0.07);
+        padding: 0.65rem 0.8rem;
+        margin-bottom: 1rem;
+        font-size: 0.9rem;
+      }
+
+      .msg[data-tone="ok"] {
+        border-color: var(--green);
+        background: rgba(47, 97, 85, 0.08);
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      .sr {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+      }
+
+      footer {
+        margin-top: calc(var(--gap) * 2);
+        padding-top: 0.9rem;
+        border-top: 1px solid var(--panel-line);
+        font: 400 0.78rem/1.6 var(--data);
+        color: var(--ink-soft);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem 1.2rem;
+      }
+
+      /* One orchestrated transition: a completed layer settling into the stack. */
+      @media (prefers-reduced-motion: no-preference) {
+        .layer {
+          transition:
+            background 240ms ease,
+            border-color 240ms ease,
+            opacity 240ms ease;
+        }
+      }
+
+      @media (max-width: 30rem) {
+        .layer[data-state="done"],
+        .layer[data-state="pending"] {
+          grid-template-columns: 1.4rem 1fr;
+        }
+        .layer .status {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">Bambu Cloud &rarr; TRMNL</p>
+        <h1>Put your printers on the wall.</h1>
+        <p class="lede">
+          Four steps. Sign in here, sign in to Bambu, choose which printers to
+          show, then paste one key into your TRMNL plugin. Read only: this never
+          sends a command to a printer.
+        </p>
+      </header>
+
+      <div id="boot" class="msg" data-tone="ok">Loading&hellip;</div>
+
+      <div id="stack" hidden>
+        <!-- Layer 1 -->
+        <section class="layer" id="l1" data-state="pending" aria-labelledby="l1h">
+          <span class="n">01</span>
+          <span class="head" hidden></span>
+          <span class="body" id="l1summary">Sign in</span>
+          <span class="status"></span>
+        </section>
+
+        <!-- Layer 2 -->
+        <section class="layer" id="l2" data-state="pending" aria-labelledby="l2h">
+          <span class="n">02</span>
+          <span class="body" id="l2summary">Connect Bambu Cloud</span>
+          <span class="status"></span>
+        </section>
+
+        <!-- Layer 3 -->
+        <section class="layer" id="l3" data-state="pending" aria-labelledby="l3h">
+          <span class="n">03</span>
+          <span class="body" id="l3summary">Choose printers</span>
+          <span class="status"></span>
+        </section>
+
+        <!-- Layer 4 -->
+        <section class="layer" id="l4" data-state="pending" aria-labelledby="l4h">
+          <span class="n">04</span>
+          <span class="body" id="l4summary">Paste the key into TRMNL</span>
+          <span class="status"></span>
+        </section>
+      </div>
+
+      <footer>
+        <span>Read only. No printer command, ever.</span>
+        <span>Bambu Cloud only. No LAN.</span>
+        <span id="whoami"></span>
+      </footer>
+    </main>
+
+    <script type="module">
+      // Templates for each layer's active state. Kept as functions rather than
+      // hidden markup so a step cannot be reached in a half-filled state.
+      const $ = (id) => document.getElementById(id);
+      const stack = $("stack");
+      const boot = $("boot");
+
+      const state = {
+        authBase: null,
+        token: null,
+        account: null, // { device_ids, reauth_required } once enrolled
+        email: null, // Bambu account email, held only between steps 2a and 2b
+        region: "global",
+        printers: null,
+        issuedKey: null,
+      };
+
+      function esc(value) {
+        return String(value).replace(
+          /[&<>"']/g,
+          (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+        );
+      }
+
+      /** Renders one layer as done, active or pending. */
+      /**
+       * Renders one layer as done, active or pending.
+       *
+       * `blurbHtml` is named for what it is: markup, inserted unescaped so a
+       * blurb can carry a `<strong>`. Every caller is therefore responsible for
+       * escaping anything dynamic it puts there, and only one has anything
+       * dynamic to put. `title` and `summary` are escaped here because they
+       * never need markup.
+       */
+      function paint(id, layerState, { number, title, blurbHtml, summary, body }) {
+        const el = $(id);
+        el.dataset.state = layerState;
+        if (layerState === "active") {
+          el.innerHTML =
+            `<div class="head"><span class="n">${number}</span>` +
+            `<h2 id="${id}h">${esc(title)}</h2></div>` +
+            (blurbHtml ? `<p>${blurbHtml}</p>` : "") +
+            `<div class="content"></div>`;
+          el.querySelector(".content").append(body);
+        } else {
+          el.innerHTML =
+            `<span class="n">${number}</span>` +
+            `<span class="body" id="${id}h">${esc(summary ?? title)}</span>` +
+            `<span class="status">${layerState === "done" ? "done" : ""}</span>`;
+        }
+      }
+
+      function node(html) {
+        const template = document.createElement("template");
+        template.innerHTML = html.trim();
+        return template.content;
+      }
+
+      function say(target, text, tone) {
+        const box = document.createElement("div");
+        box.className = "msg";
+        if (tone) box.dataset.tone = tone;
+        box.textContent = text;
+        box.setAttribute("role", tone === "ok" ? "status" : "alert");
+        const old = target.querySelector(".msg");
+        if (old) old.remove();
+        target.prepend(box);
+      }
+
+      // ---- our API --------------------------------------------------------
+
+      async function api(method, path, body) {
+        const init = { method, headers: {} };
+        if (state.token) init.headers.Authorization = `Bearer ${state.token}`;
+        if (body !== undefined) {
+          init.headers["Content-Type"] = "application/json";
+          init.body = JSON.stringify(body);
+        }
+        const response = await fetch(path, init);
+        const text = await response.text();
+        let parsed = null;
+        if (text !== "") {
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            parsed = null;
+          }
+        }
+        return { status: response.status, body: parsed };
+      }
+
+      // ---- identity -------------------------------------------------------
+
+      async function auth(path, body, method = "POST") {
+        const init = { method, credentials: "include", headers: {} };
+        if (body !== undefined) {
+          init.headers["Content-Type"] = "application/json";
+          init.body = JSON.stringify(body);
+        }
+        const response = await fetch(`${state.authBase}${path}`, init);
+        const text = await response.text();
+        let parsed = null;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          parsed = null;
+        }
+        return { ok: response.ok, status: response.status, body: parsed };
+      }
+
+      /** Exchanges the session cookie for a short-lived bearer token. */
+      async function refreshToken() {
+        const result = await auth("/token", undefined, "GET");
+        state.token = result.ok && typeof result.body?.token === "string" ? result.body.token : null;
+        return state.token !== null;
+      }
+
+      // ---- step 1: sign in ------------------------------------------------
+
+      function signInForm() {
+        const form = node(`
+          <form novalidate>
+            <div class="field">
+              <label for="ie">Email</label>
+              <input id="ie" name="email" type="email" autocomplete="email" required />
+            </div>
+            <div class="field">
+              <label for="ip">Password</label>
+              <input id="ip" name="password" type="password" autocomplete="current-password" required />
+            </div>
+            <div class="row">
+              <button type="submit" data-act="in">Sign in</button>
+              <button type="button" data-kind="quiet" data-act="up">Create account</button>
+              <button type="button" data-kind="quiet" data-act="google">Continue with Google</button>
+            </div>
+          </form>
+        `);
+        const el = form.querySelector("form");
+
+        el.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          await submit("/sign-in/email");
+        });
+        el.querySelector('[data-act="up"]').addEventListener("click", () => submit("/sign-up/email"));
+        el.querySelector('[data-act="google"]').addEventListener("click", async () => {
+          const result = await auth("/sign-in/social", {
+            provider: "google",
+            callbackURL: location.href,
+          });
+          const url = result.body?.url;
+          // Scheme-checked before navigating. The provider is already trusted with
+          // the password and with minting tokens, so this is depth rather than a
+          // boundary, but it is the one place provider data could become code.
+          if (typeof url === "string" && /^https:\/\//i.test(url)) location.assign(url);
+          else say($("l1"), "Google sign-in is not available on this account yet.");
+        });
+
+        async function submit(path) {
+          const parent = $("l1");
+          const email = el.querySelector("#ie").value.trim();
+          const password = el.querySelector("#ip").value;
+          if (email === "" || password === "") {
+            say(parent, "Enter your email and password.");
+            return;
+          }
+          for (const button of el.querySelectorAll("button")) button.disabled = true;
+          const result = await auth(path, { email, password, name: email.split("@")[0] });
+          for (const button of el.querySelectorAll("button")) button.disabled = false;
+
+          if (!result.ok) {
+            const code = result.body?.code ?? "";
+            say(
+              parent,
+              code === "EMAIL_NOT_VERIFIED"
+                ? "Check your inbox for the verification code, then sign in again."
+                : (result.body?.message ?? "That did not work. Check the email and password."),
+            );
+            return;
+          }
+          if (await refreshToken()) await route();
+          else say(parent, "Signed in, but no session token came back. Reload and try again.");
+        }
+
+        return form;
+      }
+
+      // ---- step 2: Bambu --------------------------------------------------
+
+      function bambuEmailForm() {
+        const form = node(`
+          <form novalidate>
+            <div class="field">
+              <label for="br">Region</label>
+              <select id="br" name="region">
+                <option value="global">Global (bambulab.com)</option>
+                <option value="china">China (bambulab.cn)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="be">Bambu account email</label>
+              <input id="be" name="email" type="email" autocomplete="off" required />
+            </div>
+            <div class="row"><button type="submit">Email me a code</button></div>
+          </form>
+        `);
+        const el = form.querySelector("form");
+        el.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const parent = $("l2");
+          const region = el.querySelector("#br").value;
+          const email = el.querySelector("#be").value.trim();
+          if (email === "") {
+            say(parent, "Enter the email address of your Bambu account.");
+            return;
+          }
+          const button = el.querySelector("button");
+          button.disabled = true;
+          const result = await api("POST", "/v1/enrol/code", { region, email });
+          button.disabled = false;
+
+          if (result.status === 204) {
+            state.email = email;
+            state.region = region;
+            paint("l2", "active", {
+              number: "02",
+              title: "Enter the code Bambu emailed you",
+              blurbHtml:
+                `Sent to <strong>${esc(email)}</strong>. Codes expire quickly, so use the newest one. ` +
+                "We never ask for your Bambu password.",
+              body: bambuCodeForm(),
+            });
+            return;
+          }
+          say(parent, result.body?.error ?? "Could not reach Bambu Cloud. Try again shortly.");
+        });
+        return form;
+      }
+
+      function bambuCodeForm() {
+        const form = node(`
+          <form novalidate>
+            <div class="field">
+              <label for="bc">Code</label>
+              <input id="bc" name="code" inputmode="numeric" autocomplete="one-time-code"
+                     maxlength="10" required />
+            </div>
+            <div class="row">
+              <button type="submit">Connect</button>
+              <button type="button" data-kind="quiet" data-act="back">Use a different email</button>
+            </div>
+          </form>
+        `);
+        const el = form.querySelector("form");
+        el.querySelector('[data-act="back"]').addEventListener("click", () => startBambu());
+        el.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const parent = $("l2");
+          const code = el.querySelector("#bc").value.trim();
+          const button = el.querySelector("button");
+          button.disabled = true;
+          const result = await api("POST", "/v1/enrol/session", {
+            region: state.region,
+            email: state.email,
+            code,
+          });
+          button.disabled = false;
+
+          if (result.status === 200 && Array.isArray(result.body?.printers)) {
+            state.printers = result.body.printers;
+            await route();
+            return;
+          }
+          say(parent, result.body?.error ?? "That code was not accepted.");
+        });
+        return form;
+      }
+
+      function startBambu() {
+        paint("l2", "active", {
+          number: "02",
+          title: "Connect Bambu Cloud",
+          blurbHtml:
+            "Bambu emails you a sign-in code. There is no password field here on purpose: " +
+            "the code is enough, so your Bambu password never reaches this server.",
+          body: bambuEmailForm(),
+        });
+      }
+
+      // ---- step 3: printers ----------------------------------------------
+
+      function printerForm() {
+        const rows = state.printers
+          .map(
+            (printer, index) => `
+          <label class="printer">
+            <input type="checkbox" name="p" value="${esc(printer.deviceId)}"
+                   ${index < 3 ? "checked" : ""} />
+            <span>
+              <span class="name">${esc(printer.name)}</span><br />
+              <span class="meta" data-online="${esc(printer.online)}">
+                ${printer.online ? "online" : "offline"}${printer.model ? " &middot; " + esc(printer.model) : ""}
+              </span>
+            </span>
+          </label>`,
+          )
+          .join("");
+
+        const form = node(`
+          <form novalidate>
+            <div class="printers">${rows}</div>
+            <div class="row">
+              <button type="submit">Save and get my key</button>
+            </div>
+          </form>
+        `);
+        const el = form.querySelector("form");
+        el.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const parent = $("l3");
+          const chosen = [...el.querySelectorAll('input[name="p"]:checked')].map((box) => box.value);
+          if (chosen.length === 0) {
+            say(parent, "Choose at least one printer.");
+            return;
+          }
+          if (chosen.length > 3) {
+            say(parent, "Three printers is the most the display can show legibly.");
+            return;
+          }
+          const button = el.querySelector("button");
+          button.disabled = true;
+          const result = await api("POST", "/v1/enrol/printers", { deviceIds: chosen });
+          button.disabled = false;
+
+          if (result.status === 200 && typeof result.body?.screen_key === "string") {
+            state.issuedKey = result.body.screen_key;
+            await route();
+            return;
+          }
+          say(parent, result.body?.error ?? "Could not save that selection.");
+        });
+        return form;
+      }
+
+      // ---- step 4: the key ------------------------------------------------
+
+      function keyPanel() {
+        const wrap = node(`
+          <div>
+            <div class="key" id="k"></div>
+            <div class="row">
+              <button type="button" data-act="copy">Copy key</button>
+              <button type="button" data-kind="quiet" data-act="done">I've pasted it</button>
+            </div>
+            <p class="note" style="margin-top:1rem">
+              In TRMNL, open your plugin's settings and paste this into
+              <strong>Screen key</strong>. It is shown once and never stored: if you lose
+              it, come back here and issue a new one.
+            </p>
+          </div>
+        `);
+        wrap.querySelector("#k").textContent = state.issuedKey;
+        wrap.querySelector('[data-act="copy"]').addEventListener("click", async (event) => {
+          try {
+            await navigator.clipboard.writeText(state.issuedKey);
+            event.target.textContent = "Copied";
+          } catch {
+            event.target.textContent = "Select it and copy";
+          }
+        });
+        wrap.querySelector('[data-act="done"]').addEventListener("click", async () => {
+          // Clearing the key is what moves this layer from "here is your key" to
+          // the settings panel. Without it the only way onward was a reload.
+          state.issuedKey = null;
+          await route();
+        });
+        return wrap;
+      }
+
+      function managePanel() {
+        const count = state.account.device_ids.length;
+        const wrap = node(`
+          <div>
+            ${
+              state.account.reauth_required
+                ? '<div class="msg">Bambu stopped accepting the saved sign-in, so the display has stopped updating. Choose <strong>Change printers</strong> to sign in again.</div>'
+                : ""
+            }
+            <p>
+              ${count === 0 ? "No printers chosen yet." : `Showing ${count} printer${count === 1 ? "" : "s"}.`}
+              The display refreshes on TRMNL's own schedule.
+            </p>
+            <div class="row">
+              <button type="button" data-act="printers" data-kind="quiet">Change printers</button>
+              <button type="button" data-act="key" data-kind="quiet">Issue a new key</button>
+              <button type="button" data-act="del" data-kind="danger">Delete everything</button>
+            </div>
+          </div>
+        `);
+
+        wrap.querySelector('[data-act="printers"]').addEventListener("click", () => startBambu());
+        wrap.querySelector('[data-act="key"]').addEventListener("click", async () => {
+          const result = await api("POST", "/v1/enrol/key");
+          if (result.status === 200 && typeof result.body?.screen_key === "string") {
+            state.issuedKey = result.body.screen_key;
+            await route();
+          } else {
+            say($("l4"), result.body?.error ?? "Could not issue a new key.");
+          }
+        });
+        wrap.querySelector('[data-act="del"]').addEventListener("click", async (event) => {
+          const button = event.target;
+          if (button.dataset.confirm !== "yes") {
+            button.dataset.confirm = "yes";
+            button.textContent = "Delete everything — click again";
+            return;
+          }
+          const result = await api("DELETE", "/v1/account");
+          if (result.status === 204) {
+            state.account = null;
+            state.printers = null;
+            state.issuedKey = null;
+            await route();
+          } else {
+            say($("l4"), result.body?.error ?? "Could not delete the account.");
+          }
+        });
+        return wrap;
+      }
+
+      // ---- routing --------------------------------------------------------
+
+      /** Decides which layer is active from what is actually known. */
+      async function route() {
+        stack.hidden = false;
+        boot.hidden = true;
+
+        if (state.token === null) {
+          paint("l1", "active", {
+            number: "01",
+            title: "Sign in",
+            blurbHtml:
+              "This account is what owns your printer selection, so you can change it or " +
+              "delete it later. Your password goes straight to the identity provider that " +
+              "holds it \u2014 our own server never receives it and nothing here stores it.",
+            body: signInForm(),
+          });
+          for (const id of ["l2", "l3", "l4"]) {
+            paint(id, "pending", { number: id.slice(1).padStart(2, "0"), title: titleOf(id) });
+          }
+          $("whoami").textContent = "";
+          return;
+        }
+
+        paint("l1", "done", { number: "01", title: "Sign in", summary: "Signed in" });
+
+        const account = await api("GET", "/v1/account");
+        if (account.status === 401) {
+          // The token expired mid-flow. One silent retry, then back to step 1.
+          state.token = null;
+          if (await refreshToken()) return await route();
+          return await route();
+        }
+        state.account = account.status === 200 ? account.body : null;
+        $("whoami").textContent = state.account ? "Set up" : "Not set up yet";
+
+        // A freshly listed printer set means step 3 is where the work is.
+        if (state.printers !== null && state.issuedKey === null) {
+          paint("l2", "done", {
+            number: "02",
+            title: "Connect Bambu Cloud",
+            summary: "Bambu connected",
+          });
+          paint("l3", "active", {
+            number: "03",
+            title: "Choose printers",
+            blurbHtml:
+              "Up to three. The first one you tick leads the display, because that is the " +
+              "one you will read from across the room.",
+            body: printerForm(),
+          });
+          paint("l4", "pending", { number: "04", title: titleOf("l4") });
+          return;
+        }
+
+        if (state.issuedKey !== null) {
+          paint("l2", "done", { number: "02", title: "", summary: "Bambu connected" });
+          paint("l3", "done", {
+            number: "03",
+            title: "",
+            summary: chosenSummary(state.account?.device_ids.length ?? null),
+          });
+          paint("l4", "active", {
+            number: "04",
+            title: "Your screen key",
+            blurbHtml: "",
+            body: keyPanel(),
+          });
+          return;
+        }
+
+        if (state.account === null) {
+          startBambu();
+          paint("l3", "pending", { number: "03", title: titleOf("l3") });
+          paint("l4", "pending", { number: "04", title: titleOf("l4") });
+          return;
+        }
+
+        // Enrolled already: show the management panel in the last layer.
+        paint("l2", "done", { number: "02", title: "", summary: "Bambu connected" });
+        paint("l3", "done", {
+          number: "03",
+          title: "",
+          summary: chosenSummary(state.account.device_ids.length),
+        });
+        paint("l4", "active", {
+          number: "04",
+          title: "Your display is set up",
+          blurbHtml: "",
+          body: managePanel(),
+        });
+      }
+
+      /**
+       * A count is never reported as zero when it is merely unknown, which is
+       * the same rule the display itself follows: absent is absent.
+       */
+      function chosenSummary(count) {
+        if (count === null) return "Printers chosen";
+        return `${count} printer${count === 1 ? "" : "s"} chosen`;
+      }
+
+      function titleOf(id) {
+        return {
+          l1: "Sign in",
+          l2: "Connect Bambu Cloud",
+          l3: "Choose printers",
+          l4: "Paste the key into TRMNL",
+        }[id];
+      }
+
+      // ---- boot -----------------------------------------------------------
+
+      async function start() {
+        const config = await fetch("/v1/config").then((response) =>
+          response.ok ? response.json() : null,
+        );
+        if (config === null || typeof config.auth_base_url !== "string" || config.auth_base_url === "") {
+          boot.dataset.tone = "";
+          boot.textContent =
+            "Sign-in is not configured on this deployment, so there is nothing to set up here yet.";
+          return;
+        }
+        state.authBase = config.auth_base_url.replace(/\/+$/, "");
+        await refreshToken();
+        await route();
+      }
+
+      start().catch(() => {
+        boot.dataset.tone = "";
+        boot.textContent = "Could not load. Reload the page.";
+      });
+    </script>
+  </body>
+</html>

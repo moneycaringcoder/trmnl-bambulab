@@ -145,6 +145,14 @@ export default {
       });
     }
 
+    // What the setup page needs before anyone has signed in: where the identity
+    // provider lives. Public by construction — the browser talks to it directly,
+    // so it is not a secret and cannot be one. Nothing else is exposed here, and
+    // an empty string is the honest answer on a deployment without identity.
+    if (request.method === "GET" && url.pathname === "/v1/config") {
+      return json({ auth_base_url: env.NEON_AUTH_BASE_URL ?? "" }, 200);
+    }
+
     if (request.method === "GET" && url.pathname === "/v1/screen") {
       return await screenResponse(request, env);
     }
@@ -349,7 +357,7 @@ async function enrolResponse(request: Request, env: Env, url: URL): Promise<Resp
  * have told a key-guesser whether a key existed, whereas here the caller is a
  * person with a browser who needs to be told to sign in again.
  */
-function routeResponse(result: RouteResult): Response {
+export function routeResponse(result: RouteResult): Response {
   switch (result.kind) {
     case "done":
       return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
@@ -364,7 +372,14 @@ function routeResponse(result: RouteResult): Response {
     case "unauthenticated":
       return json({ error: "Sign in again." }, 401);
     case "no-account":
-      return json({ error: "There is no printer set up for this account yet." }, 404);
+      // Reached by the picker, the key rotation and the delete, so the wording
+      // has to fit all three. The previous text said no printer was set up,
+      // which read as a contradiction to someone in the middle of setting one
+      // up after their session had lapsed.
+      return json(
+        { error: "Nothing is connected to this account yet. Connect Bambu Cloud first." },
+        404,
+      );
     case "throttled":
       return new Response(JSON.stringify({ error: "Too many attempts. Wait a minute." }), {
         status: 429,

@@ -17,6 +17,20 @@
     "crons": ["*/5 * * * *"]
   },
 
+  // The setup page. Static, because it is one HTML file and giving it a build
+  // step would be the only build step in this package.
+  //
+  // `run_worker_first` is the load-bearing part: without it the asset server
+  // answers first and shadows the API, so `/v1/screen` would return the page
+  // instead of a render and TRMNL would poll HTML forever. Every route the
+  // Worker owns is listed, and anything else falls through to the page.
+  "assets": {
+    "directory": "./public",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/v1/*", "/healthz"]
+  },
+
   // Workers Logs indexes the one-object-per-line events from log.ts.
   //
   // `invocation_logs` goes under `logs`, not directly under `observability`.

@@ -160,9 +160,17 @@ The cron is running on its five-minute schedule against a real Bambu account and
 writing real renders — name and state, no progress, which is HTTP fidelity and
 exactly what the thin tier is. Rich figures wait on the collector.
 
-What remains for the hosted tier is a TRMNL plugin on the polling strategy with
-the screen key pasted into it, and publishing the Unlisted Recipe. Both are
-actions inside TRMNL's own interface, so both are the owner's.
+**The marketplace conversion is live and proven end to end** (2026-08-25): the
+owner registered the plugin, installed it, and TRMNL's real servers drove every
+seam — the code exchange at `trmnl.com/oauth/token` (with `code` alone, exactly
+as documented; the client secret TRMNL's UI displays went unused), the
+Bearer-authenticated success webhook, and the markup POST, whose render TRMNL
+drew: both printers, by name, printing. The pre-conversion account was deleted
+once nothing could reach it.
+
+What remains for the hosted tier is the collector on the owner's hardware for
+the rich fields, visual refinement, and the go-public flip — all in
+`docs/HANDOFF.md`'s closing checklist.
 
 ## Known unknowns
 
@@ -173,6 +181,6 @@ been moved into `docs/BAMBU-PROTOCOL.md`.
 | --- | --- |
 | Whether the emailed-code path works for a two-factor account | The owner pastes a token exported from another client; `pnpm setup` already offers that |
 | Whether `/user/print` ever carries `progress`, for a cloud-started print | Nothing: MQTT supplies progress, and the hosted tier shows state without a percentage |
-| Whether TRMNL's polling reader accepts our payload unchanged | The shape is already flat, which is what it wants; worst case is a thin adapter |
-| Whether a hosted account can be enrolled without the user pasting anything | Probably not: they must carry one key from us to TRMNL. One paste is the floor |
+| ~~Whether TRMNL's polling reader accepts our payload unchanged~~ | **Superseded, then settled better.** The marketplace conversion moved rendering to us: TRMNL POSTs to `/trmnl/markup` and draws the HTML we return. Proven live: the owner's display renders both printers by name |
+| ~~Whether a hosted account can be enrolled without the user pasting anything~~ | **Settled: yes, nothing at all.** The old floor was one pasted key; the marketplace install handshake removed it. Install → emailed Bambu code → pick printers. Proven live on the owner's account |
 | ~~Whether the collector's MQTT session yields the rich fields for a real account~~ | **Settled.** Run against a real account it produced progress, layer, layers, remaining, and both temperatures with their targets — the figures no HTTP endpoint carries. It also exposed the reason the render needs an HTTP baseline: MQTT carries no printer name, so the first version rendered nameless cards |

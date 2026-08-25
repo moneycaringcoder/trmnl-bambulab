@@ -1,5 +1,12 @@
 # Handoff: from working tree to public
 
+**Status 2026-08-25: steps 1-4 are done and proven live.** The migration ran,
+the Worker is deployed, the plugin is registered (plus a knowledge-base page at
+`<worker>/help`), and the owner installed it: every TRMNL seam worked, and the
+display renders both printers by name. The client id/secret TRMNL displays went
+unused - the documented code-only exchange is correct. What remains is step 6
+and the deliberately-not-done list.
+
 Everything below is either a command you run or a button you click. Nothing in
 it is a design decision — those are made, tested, and recorded in
 `docs/DECISIONS.md`. Work through it in order; each step assumes the one before.

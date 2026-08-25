@@ -1,9 +1,32 @@
 # The collector
 
-**Status: designed, not built.** Nothing in this document describes running
-software. It settles the decisions so that building it is mechanical, and it is
-the operations guide for the machine that will run it. Where a number is
-measured rather than estimated, it says so.
+**Status: built, and verified except against a real Bambu account.** The lease,
+the orchestration and the render path are covered by tests, and have also been
+exercised as real processes against real Postgres and the real Bambu Cloud API:
+the pooled-endpoint refusal, the two-instance handoff, and an enrolled account
+whose token the cloud rejected. What has never happened is a session with a
+*valid* token, because that needs the owner's credentials.
+
+The container was built and started: it runs as `node`, `uid=1000`, exposes no
+port, bakes no secret, and under `--read-only --cap-drop=ALL
+--security-opt=no-new-privileges` it starts, reports a missing `DATABASE_URL`
+and exits 78 — so no writable filesystem is needed. What has not been done is
+running it on the owner's Proxmox host, so the LXC guidance below is reasoned
+from the sizing measurements rather than observed there.
+
+One defect found by audit is worth recording here rather than only in the git
+history, because it is the failure this component is most able to cause. The
+first version could not stop a live MQTT session: it discarded the broker's stop
+handle, so a collector that lost its lease kept its connections and kept writing
+rows a standby had already taken over — two MQTT connections on one Bambu
+account, which is what Bambu bans for. It reached review because the
+orchestration lived in the entrypoint and had no tests. It now lives in
+`collector/src/supervise.ts`, and four tests fail if the stop handle is dropped
+again.
+
+This document records the design, the measurements, and the operations guide for
+the machine that runs it. Where a number is measured rather than estimated, it
+says so.
 
 ## What it is for
 
@@ -29,11 +52,11 @@ Bambu MQTT ──────► collector (LXC) ──────► Neon
 TRMNL ──────► Cloudflare Worker ─────────────┘
 ```
 
-The collector makes **only outbound connections**: to Bambu's broker on 8883,
-and to Neon over HTTPS. It listens on nothing. There is no tunnel, no port
-forward, and no inbound path from the internet to the machine running it. The
-public surface stays exactly where it is, on Cloudflare, with the rate ceilings
-and the key checks already built.
+The collector makes **only outbound connections**: to Bambu over HTTPS and MQTT
+on 8883, and to Neon over HTTPS and direct Postgres. It listens on nothing.
+There is no tunnel, no port forward, and no inbound path from the internet to
+the machine running it. Cloudflare remains the public surface, with the rate
+ceilings and key checks already built.
 
 It writes the same `screens` rows the Worker's cron writes, in the same shape.
 The Worker needs no change at all: `GET /v1/screen` already serves whatever is
@@ -139,41 +162,120 @@ constraint. In order, the real ones are:
 A GPU is of no use here. There is no inference and no image work — TRMNL renders
 the screen from our JSON on its own servers.
 
-## Running it in an LXC
+## Deployment and operations
 
-Nothing below has been executed; it is the intended shape.
+Build from the repository root. The root is the build context because the
+collector imports the existing bridge and hosted modules directly:
 
-**Container resources.** 1 vCPU and 512 MB is generous for hundreds of accounts.
-Give it more disk than it needs for logs and nothing else; the collector stores
-no state locally, because Neon is the state.
+```sh
+docker build -f collector/Dockerfile -t trmnl-bambulab-collector .
+```
 
-**No inbound rules.** The container needs egress to Bambu on 8883 and HTTPS to
-Neon. It needs no listening port, so do not give it one. If a health check is
-wanted, have the collector write a heartbeat row rather than open a socket.
+Keep the runtime environment in a root-owned file outside the repository and
+set its mode to `0600`. The names are:
 
-**Environment.** The same names the Worker uses, so one mental model covers both:
+```dotenv
+DATABASE_URL=
+TOKEN_KEY_K1=
+TOKEN_KEY_CURRENT_ID=k1
+# Optional. There is no "no ceiling": omitting this line uses the default of
+# 200 accounts, so set it explicitly once more than that many people enrol.
+COLLECTOR_MAX_ACCOUNTS=1000
+```
 
-| Variable | Purpose |
-| --- | --- |
-| `DATABASE_URL` | Neon connection string |
-| `TOKEN_KEY_CURRENT_ID` | Which key seals new writes |
-| `TOKEN_KEY_<ID>` | The keys themselves, one per id |
-| `COLLECTOR_ID` | Names this instance in the leader lock |
-| `COLLECTOR_MAX_ACCOUNTS` | A ceiling, so one instance cannot take on more than it was sized for |
+`TOKEN_KEY_K1` must contain the same key material as the Worker. Otherwise the
+collector cannot open any stored Bambu token. `TOKEN_KEY_CURRENT_ID` is not a
+secret; `k1` names that key when rows are sealed.
 
-**Two instances.** Both holding MQTT for one account means two connections and
-two writers, which is the churn Bambu dislikes and the flicker users see. Use a
-Postgres advisory lock: whoever holds it collects, the other idles and takes over
-when the lock is released or its holder stops renewing. This is a lock and a
-heartbeat, not a cluster.
+`DATABASE_URL` **must be a direct Postgres connection, never a pooled
+connection**. The collector's exclusion lease is a session-scoped Postgres
+advisory lock. A pooler can put two collectors on one backend, where both can
+appear to own the same lock. That risks two MQTT connections for each Bambu
+account, which is exactly the connection pattern Bambu bans for. In the Neon
+dashboard, open **Connect**, turn off the pooled connection option, and copy the
+direct connection string. For an existing Neon string, the direct host is the
+same hostname without the `-pooler` suffix. The collector also probes the
+connection at startup and refuses to collect when the session cannot enforce
+the lease.
 
-**Restart policy.** Restart on failure with backoff. A collector that cannot
-reach Bambu must not reconnect in a tight loop; the bridge's existing backoff is
-the behaviour to reuse.
+Run the image without an inbound port and with its root filesystem read-only:
 
-**Updates.** Pull, restart, done. There is no migration to run and no local state
-to preserve. The screen endpoint keeps serving through the gap, and the cron
-covers a long one.
+```sh
+docker run -d \
+  --name trmnl-bambulab-collector \
+  --restart on-failure:5 \
+  --read-only \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  --ulimit nofile=4096:4096 \
+  --env-file /etc/trmnl-bambulab/collector.env \
+  trmnl-bambulab-collector
+```
+
+The environment file is read by Docker and is not copied into the container.
+The process keeps no local state and needs no writable temporary directory.
+There is therefore no volume to mount. Do not add `-p`: nothing listens inside
+the container.
+
+### Proxmox LXC
+
+Use an unprivileged LXC. If Docker runs inside it, enable nesting for that
+container; do not make the LXC privileged to make Docker easier. Start with one
+vCPU and 512 MB of memory, which the measurements above make generous for
+hundreds of accounts. The image and its logs are the only meaningful disk use.
+Set the open-file limit comfortably above the account ceiling; `4096` covers the
+example ceiling of 1000 and its expected sockets.
+
+The LXC needs outbound DNS, HTTPS, Bambu MQTT on TCP 8883, and the direct
+Postgres connection to Neon. It needs no inbound firewall rule, forwarded port,
+tunnel or public address.
+
+### Restarts and logs
+
+Docker's `on-failure` policy restarts a crashed process with a bounded retry
+count. MQTT reconnections have their own backoff, so a Bambu outage does not
+turn into a tight connection loop. Three exit statuses matter, and the restart
+policy is what makes the difference between them load-bearing:
+
+| Status | Means | Do |
+| --- | --- | --- |
+| 0 | Stopped on a signal, or it was a standby that was stopped while waiting | Nothing. This is a clean stop and `on-failure` will not restart it |
+| 1 | The lease was lost, or the process failed | Let it restart. It gives up its sessions first |
+| 78 | Configuration a restart cannot repair | Stop the container, fix the environment, start it again. Restarting will not help |
+
+Logs are structured JSON lines. A healthy leader logs `collector starting`, then
+`holding the collection lease`, then `collecting accounts` with a count, then
+`stored a live render` as reports arrive. Per-account entries carry only an
+`account_tag`, which is a truncated one-way digest of the account id, never an
+email, token, device id or serial. A standby logs `another collector holds the
+lease` once and then waits, asking again every few seconds; this is normal, not
+a warning, and the process stays running. A pooled or otherwise unusable
+database session logs `this database cannot enforce the collection lease` and
+exits with status 78. `lost the collection lease` means the heartbeat found the
+lock gone: the collector closes its MQTT sessions, gives up whatever it still
+holds, and exits **1**, not 0, so the `on-failure` policy restarts it. That
+status is deliberate. By the time the heartbeat notices, a standby may already
+be collecting these accounts, and a collector that kept its sessions open would
+put a second MQTT connection on each Bambu account — which is what Bambu bans
+for. Exiting zero would be just as wrong in the other direction: the container
+would stop and stay stopped.
+
+A collector with nobody enrolled logs `collecting accounts` with a count of
+zero, keeps the lease, and looks again every five minutes. It does not exit,
+because a container that exits cleanly is not restarted by the `on-failure`
+policy above, and the next person to enrol would then get no live telemetry
+until somebody noticed.
+
+A second instance is safe and is the way to restart without a collection gap:
+start the replacement, wait for its standby line, then stop the old instance.
+The replacement takes the lease as soon as the old Postgres connection drops.
+There is no coordination step, timeout or local state to carry over.
+
+When the collector is down, rich MQTT figures stop updating. The cron resumes
+writing the HTTP-only name and state view within five minutes, so displays
+degrade but do not blank. The screen endpoint continues serving the last render
+and its age even during the handoff. This fallback is why the cron remains in
+place rather than being replaced by the collector.
 
 ## Failure modes
 
@@ -191,8 +293,9 @@ none of them blanks a display.
 ## Before this carries anyone else's account
 
 - Disk encryption on the host, and a backup story that does not copy the key.
-- The threat model in `SECURITY.md` extended to cover a self-operated collector,
-  because it currently reasons about Cloudflare and Neon only.
+- ~~The threat model in `SECURITY.md` extended to cover a self-operated
+  collector.~~ Done: see "A compromised collector host" there. It names the
+  obligations above rather than leaving them implied.
 - A decision on who is allowed to enrol. An open hosted tier whose telemetry is
   collected on one person's hardware is a promise about uptime and privacy that
   should be made deliberately, not by leaving the door open.

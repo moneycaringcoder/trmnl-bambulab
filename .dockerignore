@@ -1,0 +1,57 @@
+# Build-context exclusions for `collector/Dockerfile`.
+#
+# At the root because that is where Docker reads it. The Dockerfile copies from
+# `bridge/`, `hosted/` and `collector/`, so the build context has to be the
+# repository root, and a `collector/.dockerignore` would be silently ignored —
+# which is worse than not having one, because someone would tighten it and
+# believe the context was tightened.
+
+# Dependency trees and generated output are never build inputs.
+**/node_modules
+**/coverage
+**/dist
+**/.wrangler
+**/_build
+
+# Tests do not run in the production image.
+**/test
+**/test/**
+**/*.test.ts
+**/vitest.config.*
+
+# Local configuration and secret-bearing material must never enter the context.
+**/.env
+**/.env.*
+**/.dev.vars
+**/.dev.vars.*
+**/.trmnlp.yml
+**/*.pem
+**/*.key
+**/*.p12
+**/captures
+**/captures/**
+**/raw-telemetry
+**/raw-telemetry/**
+bridge/spikes
+bridge/spikes/**
+
+# Local state, captures, logs and browser artifacts can contain identifiers.
+**/*.pcap
+**/*.pcapng
+**/*.log
+**/*.sqlite*
+**/*.har
+.playwright-mcp
+.playwright-mcp/**
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.webp
+
+# Repository and editor metadata are not needed to build the process.
+.git
+.githooks
+.omp
+**/.DS_Store
+**/.vscode
+**/.idea

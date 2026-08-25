@@ -1,0 +1,9 @@
+# pnpm 11 reads project settings from here rather than from `package.json`.
+#
+# Vitest bundles through esbuild, whose install script links a prebuilt binary.
+# Vitest runs correctly without it, because the platform package
+# `@esbuild/linux-x64` already carries that binary, so the script is declined
+# rather than allowed to run arbitrary code at install time. Declaring it keeps
+# `pnpm install` from prompting or failing.
+allowBuilds:
+  esbuild: false

@@ -1,0 +1,27 @@
+{
+  "name": "trmnl-bambulab-collector",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Holds live Bambu Cloud MQTT for hosted accounts and stores the renders",
+  "scripts": {
+    "start": "node src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "scan": "../scripts/secret-scan.sh --tree"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

@@ -119,6 +119,37 @@ export async function importKeyring(
 }
 
 /**
+ * Collects the `TOKEN_KEY_*` secrets out of an environment, in one place.
+ *
+ * Every surface holding tokens needs this — the Worker from its bindings, the
+ * collector from `process.env` — and duplicating the prefix rule is how one of
+ * them ends up quietly reading a different key set from the other. Then a token
+ * sealed by one cannot be opened by the other, which looks like a corrupt row
+ * rather than a configuration mistake.
+ *
+ * Anything that is not a string is ignored rather than coerced: a binding can
+ * hold a queue or a namespace, and `process.env` can hold an unset variable.
+ *
+ * `TOKEN_KEY_CURRENT_ID` is required rather than defaulted. It is deliberately
+ * meaningless, so guessing it is cheap and wrong: a surface that guessed would
+ * seal rows under a key id the operator never named, and rotation works by
+ * changing exactly this value.
+ */
+export async function importKeyringFromEnv(env: Record<string, unknown>): Promise<Keyring> {
+  const secrets: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (!name.startsWith("TOKEN_KEY_") || name === "TOKEN_KEY_CURRENT_ID") continue;
+    if (typeof value !== "string" || value === "") continue;
+    secrets[name.slice("TOKEN_KEY_".length).toLowerCase()] = value;
+  }
+  const currentId = env.TOKEN_KEY_CURRENT_ID;
+  if (typeof currentId !== "string" || currentId === "") {
+    throw new CryptoError("TOKEN_KEY_CURRENT_ID must name one of the configured keys");
+  }
+  return await importKeyring(secrets, currentId);
+}
+
+/**
  * Derives the owner-tag key from an encryption secret, by HKDF with a label.
  *
  * The label is what keeps the two uses of one secret independent. It is a

@@ -6,7 +6,10 @@ Plugin webhook. It is a monitoring tool: it never sends a command to a printer.
 
 It runs in two ways. Self-hosted, the user runs the bridge on their own machine
 and our backend is never involved. Hosted, we run it, which means we hold the
-user's Bambu Cloud token on their behalf.
+user's Bambu Cloud token on their behalf. The hosted tier's public surface is
+Cloudflare's, but its secrets are no longer confined to Cloudflare and Neon: an
+always-on *collector*, running on hardware the operator owns, holds the key that
+opens those tokens. See "A compromised collector host" below.
 
 The security policy matters more here than in an average repository, because
 two long-lived credentials are in play — a Bambu Cloud token and a TRMNL
@@ -33,7 +36,9 @@ In the hosted tier we hold that token because the user runs nothing. That
 carries obligations which are not optional, and they are listed in `AGENTS.md`:
 encryption at rest with a real key management story, a written threat model
 kept current, revocation and deletion that actually delete, and per-account
-rate limits before launch.
+rate limits before launch. Those obligations follow the key rather than the
+Worker: the collector opens the same sealed tokens, so all of this applies on
+the machine running it too.
 
 ### A leaked TRMNL webhook URL
 
@@ -93,10 +98,12 @@ here to revoke, by design.
 
 ### What the hosted database reveals if it leaks
 
-Assume the rows without the Worker's secrets. From `accounts`, an attacker gets:
-encrypted Bambu tokens they cannot open, screen-key fingerprints they cannot
-reverse, the printer serials each account chose, a region, and a keyed tag
-identifying each owner.
+Assume the rows without the key that seals the tokens — a key which now exists
+in two places rather than one, since the collector holds a copy of it, so this
+section's premise is only as strong as that machine. From `accounts`, an
+attacker gets: encrypted Bambu tokens they cannot open, screen-key fingerprints
+they cannot reverse, the printer serials each account chose, a region, and a
+keyed tag identifying each owner.
 
 From `screens` they get something more sensitive, and it is worth naming rather
 than leaving implied: that table holds the exact JSON last served to TRMNL, so it
@@ -118,6 +125,144 @@ No email address, no password, no verification code, and no plaintext token is
 stored anywhere. A password is never received in the first place: the hosted
 Bambu sign-in uses an emailed code.
 
+### A compromised collector host
+
+The hosted tier now has a second machine, and it is not one of Cloudflare's.
+Bambu's HTTP interface carries no progress, layer, remaining time or
+temperature — those arrive over MQTT, and a Worker cron cannot hold a socket
+open — so an always-on *collector* runs in a container on hardware the operator
+owns, keeps one MQTT session per hosted account, and writes the same `screens`
+rows the cron writes. Its design is `docs/COLLECTOR.md`; the reasoning is D18
+in `docs/DECISIONS.md`.
+
+To open a sealed token it needs the key that sealed it, which is the same
+`TOKEN_KEY_K1` material the Worker holds. So the exposure has to be said
+plainly: **that machine holds the key that decrypts every hosted user's Bambu
+Cloud token.** Not one account's. All of them.
+
+Set that against "A leaked Bambu Cloud access token" above. That entry is one
+person's printers, print history and cloud telemetry. This one is the same harm
+multiplied by every enrolled account, reached without touching Cloudflare or
+Neon, because the key is in neither. It is the largest single point of exposure
+in the system, and it did not exist before the collector did.
+
+Recovery is correspondingly worse. There is no bulk revocation to pull: as that
+entry says, the mitigation for a leaked cloud token is account-side, so it is
+every enrolled user changing their Bambu password and signing their sessions
+out. Introducing a new token key is mechanical — the keyring already holds more
+than one key, and `TOKEN_KEY_CURRENT_ID` chooses which one seals new writes —
+but a new key cannot un-leak a token somebody has already opened.
+
+Two properties bound the damage, and neither of them protects the key. The
+collector is read-only in the same sense the rest of this project is: the MQTT
+client cannot encode an outbound publish, so owning the host still yields no way
+to command a printer without writing new code for it. And an opened token lives
+in memory for the life of a session; nothing writes one to the box.
+
+**Physical access.** The Worker's copy of the key sits in Cloudflare's secret
+store. This copy sits on a machine somebody can pick up. Full-disk encryption on
+the host is therefore an obligation rather than a suggestion, and it is the
+operator's to discharge — nothing in this repository can check it, so treat it
+as unverified until the person running the box says otherwise. Be clear about
+what it covers: a disk that is stolen or thrown away, not a powered-on machine
+with a shell available on it.
+
+**Backups.** A backup of that host which captures the container's environment is
+a copy of every user's credential, kept wherever backups are kept, usually for
+longer than anything else and usually under weaker access control than the host
+itself. Either the key is excluded from the backup, or the backup is encrypted
+under a key that is not inside it. Exclusion is the easy answer, because there
+is nothing on the collector worth backing up: it keeps no local state, Neon is
+the state, and a destroyed container loses nothing.
+
+**Container escape and privilege.** The process runs as a non-root user, listens
+on nothing, opens no inbound path, writes nothing to disk beyond log lines on
+stdout, and makes only outbound connections — Bambu on 8883, Bambu over HTTPS,
+and Postgres. The documented run drops all capabilities, mounts the root
+filesystem read-only, and sets `no-new-privileges`. What that buys is the whole
+class of attack needing a listening port, a writable path, or root inside the
+container, and there is no inbound path from the internet to the machine at all.
+What it does not buy is protection of the key, which is in the environment of
+the process that has to read it. Any code execution as that user reads it, and
+so does anyone on the host who can inspect the container's environment.
+Container isolation narrows the ways in. It does not make the host and the
+container two trust domains.
+
+**Log exposure.** Logs on a machine the operator runs are easier to reach than
+Cloudflare's: a shell, a backup, a log shipper, a screenshot pasted into a
+support thread. The property being relied on is that they hold nothing worth
+reaching. Every collector log line identifies an account only as `account_tag`,
+and no token, email, device id or serial appears at any level — the messages are
+fixed strings and the failure paths log the fact rather than the cause,
+precisely because a broker or HTTP error can name a host. `account_tag` is the
+first 64 bits of an unsalted SHA-256 of the account id, which is safe only
+because that id is 122 random bits and cannot be enumerated. It is not the
+HMAC'd owner tag the database stores, and it must never be allowed to become a
+digest of anything guessable.
+
+### Two collectors holding one Bambu account
+
+Two collector instances that both collect mean two concurrent MQTT connections
+against one Bambu account and two writers racing on one screen row. The second
+is a flickering display. The first is what Bambu temporarily bans accounts for,
+which makes this an abuse control rather than a tidiness one: the penalty lands
+on the user's own Bambu account, not on ours.
+
+Exclusion is a Postgres session-scoped advisory lock. Whoever holds it collects
+and the other idles, and a collector that crashes, is killed or loses power has
+its lock released by the database when its connection drops — no lease timeout
+to tune, no fencing token to reason about.
+
+Holding the lock is only half of it. Losing it has to close the MQTT sessions,
+not merely note the loss, and that distinction is the whole control: by the time
+the heartbeat notices, the lock is already gone and a standby may have taken
+over, so a collector that kept its connections would be the second holder on
+every one of those accounts. An audit found exactly that defect here — the first
+implementation discarded the broker's stop handle, so a lost lease left the old
+process collecting and writing. It is fixed, and the fix is pinned by tests that
+fail if the handle is dropped again. Losing the lease now closes every session
+and exits non-zero.
+
+All of that rests on two collectors getting two Postgres sessions, and against a
+pooled endpoint that is false while looking fine. Transaction pooling moves a
+connection between backends, and session multiplexing puts two clients on one
+backend, where the second acquisition re-enters the first's lock and both
+callers believe they hold it alone. This was measured against real Postgres
+rather than reasoned about: on Neon's `-pooler` host, two clients both held it.
+
+So **the collector must be given the direct Postgres endpoint, and that is
+enforced rather than advised.** Before relying on the lock, `takeLease` in
+`collector/src/lease.ts` asks for `pg_backend_pid()` twice on one connection and
+once on a second, and refuses the endpoint if the backend changed underneath one
+connection or if two connections shared one. A refusal exits non-zero before any
+account is collected. On Neon the direct host is the same hostname without the
+`-pooler` suffix.
+
+The check deliberately takes no lock while checking. The obvious probe — take
+the lock twice and see — was tried and is worse than useless on a pooler, where
+`pg_advisory_unlock` lands on whichever backend is free: it stranded a held lock
+which then blocked a correctly configured collector until that backend died. A
+control that causes the outage it was guarding against is not a control.
+
+### Losing the collector
+
+Losing the collector is not a security incident, and that is a design property
+rather than a reassurance. Both the cron and the collector write `screens`, and
+the cron writes only when the stored render is already stale —
+`DEFER_TO_RENDER_WITHIN_MS` in `hosted/src/cycle.ts`, four minutes against a
+five-minute cron. Collector up, the cron finds fresh rows and steps aside.
+Collector gone — crashed, stolen, unplugged, or deliberately shut down — the
+rows go stale and the cron resumes, so every display degrades to the thin
+HTTP-only view of name and state. It never blanks.
+
+That is what makes switching the box off an available response rather than an
+outage: an operator who suspects the host is compromised can stop it and lose a
+tier of display fidelity instead of the service. Stopping it does not undo the
+exposure — the recovery above is still every user's to do — but it costs nothing
+to do immediately. It is also why the collector must never replace the cron: a
+richer display that can disappear is a worse product than a thin one that
+cannot.
+
 ## Project security rules
 
 These are commitments, and they are auditable in the tree.
@@ -138,6 +283,13 @@ These are commitments, and they are auditable in the tree.
 - **Self-hosting never involves us.** A self-hosted bridge talks to Bambu's
   endpoints and to the user's own TRMNL webhook, and to nothing else. There is
   no phone-home, no telemetry, and no shared identifier.
+- **The collector runs against the direct Postgres endpoint.** Its single-holder
+  lease is a session-scoped advisory lock, and a pooled endpoint silently stops
+  that lock excluding anything. `takeLease` in `collector/src/lease.ts` proves
+  the session is real before it trusts the lock, and an endpoint that fails the
+  proof stops the process rather than being collected on. This is enforcement,
+  not a runbook note, because the consequence is two MQTT connections against
+  one Bambu account and Bambu bans accounts for that.
 - **Fixtures are sanitized.** Everything under `bridge/fixtures/` is a scrubbed
   capture or a hand-authored synthetic file. No real identifier, address,
   credential, task or project id, asset URL, or real file name is present. See
@@ -155,6 +307,13 @@ value blank. The sensitive variables are `BAMBU_CLOUD_ACCESS_TOKEN`,
 The last one counts as a credential even though it looks like a link, and the
 device ids are printer serials.
 
+The hosted tier keeps its secrets in Cloudflare's secret store and its rows in
+Neon, with one exception that belongs here rather than only in the threat model:
+the collector's container environment holds `DATABASE_URL` and `TOKEN_KEY_K1`,
+and the second of those opens every stored token. It is set on the container and
+belongs nowhere else — not baked into an image, not captured in a snapshot, not
+copied into a backup, and never in this repository.
+
 Two things are deliberately never stored:
 
 - **The Bambu account password.** It exists only for the duration of the one
@@ -164,7 +323,9 @@ Two things are deliberately never stored:
 - **Any verification or two-factor code.** Same lifetime, same rule.
 
 Logs never contain a serial, a device id, a token or token prefix, an account
-email, a webhook URL, or a raw report body, at any log level.
+email, a webhook URL, or a raw report body, at any log level. That holds for the
+bridge, the Worker and the collector alike. Where a hosted log has to tell
+accounts apart it prints the hashed `account_tag` and never the account id.
 
 ## Reporting a vulnerability
 
@@ -202,10 +363,12 @@ Credit is given in the advisory unless you prefer otherwise.
   reported to them. The exception is real: if this project *mishandles* such a
   weakness, for example by widening its blast radius or by failing to fail
   closed, that handling is in scope here.
-- **Local attackers already inside the trust boundary.** Anyone who can read
-  the user's filesystem or process environment already has every credential the
-  bridge holds. Local privilege escalation on the user's own machine is not
-  modelled.
+- **Local attackers on a self-hosted user's own machine.** Anyone who can read
+  that user's filesystem or process environment already has every credential the
+  bridge holds, and all of it is their own. Local privilege escalation there is
+  not modelled. The exclusion stops at the collector host: local access to
+  *that* machine reaches other people's credentials, which is in scope and is
+  covered under "A compromised collector host".
 - **Rate limiting and the payload size ceiling.** These exist so the bridge is
   a good citizen of the TRMNL API and so renders stay correct. They are
   correctness constraints, not security boundaries.

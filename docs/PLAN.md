@@ -165,4 +165,4 @@ been moved into `docs/BAMBU-PROTOCOL.md`.
 | Whether `/user/print` ever carries `progress`, for a cloud-started print | Nothing: MQTT supplies progress, and the hosted tier shows state without a percentage |
 | Whether TRMNL's polling reader accepts our payload unchanged | The shape is already flat, which is what it wants; worst case is a thin adapter |
 | Whether a hosted account can be enrolled without the user pasting anything | Probably not: they must carry one key from us to TRMNL. One paste is the floor |
-| Whether the hosted tier will ever need MQTT | Settled: it does, because HTTP carries no progress, layer, time or temperature. A collector on owned hardware gets them, per D18 and `docs/COLLECTOR.md`. Designed, not built |
+| Whether the collector's MQTT session yields the rich fields for a real account | Unknown until the owner's credentials run through it. The path is built and proven against real Postgres and the real cloud API, including a refused token; a *valid* token has never been tried |

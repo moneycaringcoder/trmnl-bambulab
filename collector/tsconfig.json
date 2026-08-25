@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    // `DOM` is here for the Web APIs this code genuinely uses — `CryptoKey`,
+    // `crypto.subtle`, `fetch`, `Response` — because the modules it shares with
+    // the Worker are written against those rather than against `node:crypto`.
+    // It is not a claim that a browser is present.
+    "lib": ["ES2024", "DOM"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    // Matches `bridge`: third-party declarations are not this project's to fix,
+    // and vitest's own dependency graph does not typecheck under
+    // `exactOptionalPropertyTypes`.
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

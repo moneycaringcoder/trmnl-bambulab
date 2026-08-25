@@ -83,13 +83,20 @@ Read these for behavior; never copy their code or assets.
 
 ## Gates
 
-Before every commit, all three must pass:
+Before every commit, every package you touched must typecheck and pass its
+tests, and the tree must scan clean:
 
 ```sh
-pnpm --dir bridge typecheck
-pnpm --dir bridge test
+pnpm --dir bridge typecheck && pnpm --dir bridge test
+pnpm --dir hosted typecheck && pnpm --dir hosted test
+pnpm --dir collector typecheck && pnpm --dir collector test
 scripts/secret-scan.sh --tree
 ```
+
+The three packages are separate installs with no workspace root, so each one
+needs its own invocation. `hosted` and `collector` share source with `bridge` by
+importing it directly, which means a change under `bridge/src` can break either
+of them without breaking `bridge`. Run all three when you touch shared code.
 
 Then run the `secret-auditor` agent over the change. A `blocked` verdict stops
 the commit.

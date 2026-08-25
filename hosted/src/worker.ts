@@ -17,7 +17,7 @@
  * where an email address enters the system.
  */
 
-import { importKeyring, openToken } from "./crypto.ts";
+import { importKeyringFromEnv, openToken } from "./crypto.ts";
 import { completeSignIn, discoverPrinters, requestSignInCode } from "./enrol.ts";
 import {
   deleteAccount,
@@ -66,24 +66,9 @@ export function cycleLogDetail(summary: AccountCycleSummary): LogDetail {
   };
 }
 
-/**
- * Collects the key secrets Wrangler injects, in one place.
- *
- * Both surfaces need this now, and duplicating the prefix logic is how one of
- * them ends up quietly reading a different key set from the other.
- */
+/** Named for the two call sites below; the prefix rule lives in `crypto.ts`. */
 async function keyringFrom(env: Env) {
-  const keySecrets: Record<string, string> = {};
-  for (const [name, value] of Object.entries(env)) {
-    if (
-      name.startsWith("TOKEN_KEY_") &&
-      name !== "TOKEN_KEY_CURRENT_ID" &&
-      typeof value === "string"
-    ) {
-      keySecrets[name.slice("TOKEN_KEY_".length).toLowerCase()] = value;
-    }
-  }
-  return await importKeyring(keySecrets, env.TOKEN_KEY_CURRENT_ID);
+  return await importKeyringFromEnv(env as unknown as Record<string, unknown>);
 }
 
 /**

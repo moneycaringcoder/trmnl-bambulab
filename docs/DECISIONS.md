@@ -542,8 +542,35 @@ product than a thin one that cannot.
 the machine running it holds the key that decrypts all of them. That is the
 Worker's obligation moved onto hardware somebody owns, plus a threat the Worker
 does not have: physical access. Disk encryption and a backup story that does not
-copy the key stop being paperwork. `SECURITY.md` reasons about Cloudflare and
-Neon today and must be extended before this carries anyone else's account.
+copy the key stop being paperwork. `SECURITY.md` now carries that threat model,
+under "A compromised collector host", along with the scope change it forces: the
+old blanket exclusion of local attackers covered a self-hosted user's own
+machine, where every credential is already theirs, and it cannot cover a machine
+holding other people's.
+
+**The lease needs a real session, and that was nearly missed.** Two collectors
+both collecting means two concurrent MQTT connections against one Bambu account,
+which is what Bambu bans for, so exclusion is a Postgres session-scoped advisory
+lock. The first implementation trusted the lock, and measurement against real
+Postgres showed the trust was misplaced: on Neon's `-pooler` host two clients
+landed on one backend, the second acquisition re-entered the first's lock, and
+both callers held what only one may hold. Silently. So `takeLease` now proves the
+session is real — two reads of `pg_backend_pid()` on one connection and one on a
+second — and refuses the endpoint otherwise. It proves this with reads rather
+than a trial lock, because the trial-lock version stranded a held lock on the
+pooler, where `pg_advisory_unlock` lands on whichever backend is free: a control
+that caused the outage it was guarding against.
+
+**And a session has to be closable, which was the second thing measured.** The
+lock is necessary but not sufficient: losing it has to end the MQTT sessions,
+because the lock is already gone by the time a heartbeat notices and a standby is
+free to take over. The first implementation discarded the stop handle the MQTT
+provider returns, so a collector that lost its lease kept its connections and
+kept writing rows that were no longer its to write — the very condition the lease
+exists to prevent, reached through the lease's own failure path. It survived
+review because the orchestration lived in the entrypoint, where nothing could
+call it; it is now `collector/src/supervise.ts`, which is why that module exists
+at all.
 
 **Checked rather than assumed.** The hosted data layer runs in plain Node without
 modification: `store-neon.ts` and `crypto.ts` were imported into a Node 24

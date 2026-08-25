@@ -108,8 +108,8 @@
       }
 
       /* Reading order wins over the physical metaphor. Deposited layers really
-         do stack upward, and rendering them that way put step 04 at the top of
-         the page: a reader scanned "04, 03, 02" before reaching the step they
+         do stack upward, and rendering them that way put step 03 at the top of
+         the page: a reader scanned "03, 02, 01" before reaching the step they
          were on. So the stack runs top-down instead — finished steps collapse
          above, the step you are on sits below them, and the rest wait beneath.
          The layer language survives in the bands themselves. */
@@ -317,16 +317,19 @@
         color: var(--hot);
       }
 
-      /* ---- the key ------------------------------------------------------- */
-
-      .key {
-        font: 500 1rem/1.5 var(--data);
-        word-break: break-all;
+      a.action {
+        display: inline-block;
+        font: 500 0.9rem/1 var(--body);
+        padding: 0.7rem 1.1rem;
+        border: 1px solid var(--ink);
         background: var(--ink);
         color: var(--panel-lit);
-        padding: 0.9rem 1rem;
-        border-left: 3px solid var(--hot);
-        margin-bottom: 0.8rem;
+        text-decoration: none;
+      }
+
+      a.action:hover {
+        background: var(--green);
+        border-color: var(--green);
       }
 
       .note {
@@ -399,9 +402,8 @@
         <p class="eyebrow">Bambu Cloud &rarr; TRMNL</p>
         <h1>Put your printers on the wall.</h1>
         <p class="lede">
-          Four steps. Sign in here, sign in to Bambu, choose which printers to
-          show, then paste one key into your TRMNL plugin. Read only: this never
-          sends a command to a printer.
+          Three steps. Connect Bambu Cloud, choose which printers to show, and
+          you are done. Read only: this never sends a command to a printer.
         </p>
       </header>
 
@@ -411,29 +413,21 @@
         <!-- Layer 1 -->
         <section class="layer" id="l1" data-state="pending" aria-labelledby="l1h">
           <span class="n">01</span>
-          <span class="head" hidden></span>
-          <span class="body" id="l1summary">Sign in</span>
+          <span class="body" id="l1summary">Connect Bambu Cloud</span>
           <span class="status"></span>
         </section>
 
         <!-- Layer 2 -->
         <section class="layer" id="l2" data-state="pending" aria-labelledby="l2h">
           <span class="n">02</span>
-          <span class="body" id="l2summary">Connect Bambu Cloud</span>
+          <span class="body" id="l2summary">Choose printers</span>
           <span class="status"></span>
         </section>
 
         <!-- Layer 3 -->
         <section class="layer" id="l3" data-state="pending" aria-labelledby="l3h">
           <span class="n">03</span>
-          <span class="body" id="l3summary">Choose printers</span>
-          <span class="status"></span>
-        </section>
-
-        <!-- Layer 4 -->
-        <section class="layer" id="l4" data-state="pending" aria-labelledby="l4h">
-          <span class="n">04</span>
-          <span class="body" id="l4summary">Paste the key into TRMNL</span>
+          <span class="body" id="l3summary">Done</span>
           <span class="status"></span>
         </section>
       </div>
@@ -451,15 +445,18 @@
       const $ = (id) => document.getElementById(id);
       const stack = $("stack");
       const boot = $("boot");
+      const tokenStorageName = "trmnlManageToken";
+      const backStorageName = "trmnlBackUrl";
+
+      let manageToken = null;
+      let backUrl = null;
 
       const state = {
-        authBase: null,
-        token: null,
         account: null, // { device_ids, reauth_required } once enrolled
-        email: null, // Bambu account email, held only between steps 2a and 2b
+        email: null, // Bambu account email, held only between steps 1a and 1b
         region: "global",
         printers: null,
-        issuedKey: null,
+        completedCount: null,
       };
 
       function esc(value) {
@@ -469,15 +466,13 @@
         );
       }
 
-      /** Renders one layer as done, active or pending. */
       /**
        * Renders one layer as done, active or pending.
        *
        * `blurbHtml` is named for what it is: markup, inserted unescaped so a
        * blurb can carry a `<strong>`. Every caller is therefore responsible for
-       * escaping anything dynamic it puts there, and only one has anything
-       * dynamic to put. `title` and `summary` are escaped here because they
-       * never need markup.
+       * escaping anything dynamic it puts there. `title` and `summary` are
+       * escaped here because they never need markup.
        */
       function paint(id, layerState, { number, title, blurbHtml, summary, body }) {
         const el = $(id);
@@ -514,11 +509,92 @@
         target.prepend(box);
       }
 
+      function readSession(name) {
+        try {
+          return sessionStorage.getItem(name);
+        } catch {
+          return null;
+        }
+      }
+
+      function writeSession(name, value) {
+        try {
+          sessionStorage.setItem(name, value);
+        } catch {
+          // In-memory access still works when storage is unavailable.
+        }
+      }
+
+      function removeSession(name) {
+        try {
+          sessionStorage.removeItem(name);
+        } catch {
+          // Nothing else to clear.
+        }
+      }
+
+      function validBackUrl(value) {
+        if (typeof value !== "string" || value === "") return null;
+        try {
+          const url = new URL(value);
+          return url.protocol === "https:" && url.hostname === "trmnl.com" ? value : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function captureAccess() {
+        const params = new URLSearchParams(location.hash.slice(1));
+        const fragmentToken = params.get("manage");
+        const fragmentBack = validBackUrl(params.get("back"));
+
+        if (fragmentToken !== null && fragmentToken !== "") {
+          manageToken = fragmentToken;
+          writeSession(tokenStorageName, fragmentToken);
+
+          backUrl = fragmentBack;
+          if (backUrl === null) removeSession(backStorageName);
+          else writeSession(backStorageName, backUrl);
+        } else {
+          manageToken = readSession(tokenStorageName);
+          backUrl = fragmentBack ?? validBackUrl(readSession(backStorageName));
+          if (fragmentBack !== null) writeSession(backStorageName, fragmentBack);
+        }
+
+        if (location.hash !== "") {
+          history.replaceState(history.state, "", `${location.pathname}${location.search}`);
+        }
+      }
+
+      function showAccessPanel(message, tone = "ok") {
+        stack.hidden = true;
+        boot.hidden = false;
+        if (tone) boot.dataset.tone = tone;
+        else delete boot.dataset.tone;
+        boot.textContent = message;
+        $("whoami").textContent = "";
+      }
+
+      function expireAccess() {
+        manageToken = null;
+        removeSession(tokenStorageName);
+        state.account = null;
+        state.email = null;
+        state.printers = null;
+        state.completedCount = null;
+        showAccessPanel(
+          "This link has expired — open the plugin's Configure button in TRMNL to get a fresh one",
+          "",
+        );
+      }
+
       // ---- our API --------------------------------------------------------
 
       async function api(method, path, body) {
-        const init = { method, headers: {} };
-        if (state.token) init.headers.Authorization = `Bearer ${state.token}`;
+        const init = {
+          method,
+          headers: { Authorization: `Bearer ${manageToken}` },
+        };
         if (body !== undefined) {
           init.headers["Content-Type"] = "application/json";
           init.body = JSON.stringify(body);
@@ -533,206 +609,11 @@
             parsed = null;
           }
         }
+        if (response.status === 401) expireAccess();
         return { status: response.status, body: parsed };
       }
 
-      // ---- identity -------------------------------------------------------
-
-      async function auth(path, body, method = "POST") {
-        const init = { method, credentials: "include", headers: {} };
-        if (body !== undefined) {
-          init.headers["Content-Type"] = "application/json";
-          init.body = JSON.stringify(body);
-        }
-        const response = await fetch(`${state.authBase}${path}`, init);
-        const text = await response.text();
-        let parsed = null;
-        try {
-          parsed = JSON.parse(text);
-        } catch {
-          parsed = null;
-        }
-        return { ok: response.ok, status: response.status, body: parsed };
-      }
-
-      /** Exchanges the session cookie for a short-lived bearer token. */
-      async function refreshToken() {
-        const result = await auth("/token", undefined, "GET");
-        state.token = result.ok && typeof result.body?.token === "string" ? result.body.token : null;
-        return state.token !== null;
-      }
-
-      // ---- step 1: sign in ------------------------------------------------
-
-      function signInForm() {
-        const form = node(`
-          <form novalidate>
-            <div class="field">
-              <label for="ie">Email</label>
-              <input id="ie" name="email" type="email" autocomplete="email" required />
-            </div>
-            <div class="field">
-              <label for="ip">Password</label>
-              <input id="ip" name="password" type="password" autocomplete="current-password" required />
-            </div>
-            <div class="row">
-              <button type="submit" data-act="in">Sign in</button>
-              <button type="button" data-kind="quiet" data-act="up">Create account</button>
-              <button type="button" data-kind="quiet" data-act="google">Continue with Google</button>
-            </div>
-          </form>
-        `);
-        const el = form.querySelector("form");
-
-        el.addEventListener("submit", async (event) => {
-          event.preventDefault();
-          await submit("/sign-in/email");
-        });
-        el.querySelector('[data-act="up"]').addEventListener("click", () => submit("/sign-up/email"));
-        el.querySelector('[data-act="google"]').addEventListener("click", async () => {
-          const result = await auth("/sign-in/social", {
-            provider: "google",
-            callbackURL: location.href,
-          });
-          const url = result.body?.url;
-          // Scheme-checked before navigating. The provider is already trusted with
-          // the password and with minting tokens, so this is depth rather than a
-          // boundary, but it is the one place provider data could become code.
-          if (typeof url === "string" && /^https:\/\//i.test(url)) location.assign(url);
-          else say($("l1"), "Google sign-in is not available on this account yet.");
-        });
-
-        async function submit(path) {
-          const parent = $("l1");
-          const email = el.querySelector("#ie").value.trim();
-          const password = el.querySelector("#ip").value;
-          if (email === "" || password === "") {
-            say(parent, "Enter your email and password.");
-            return;
-          }
-          for (const button of el.querySelectorAll("button")) button.disabled = true;
-          const result = await auth(path, { email, password, name: email.split("@")[0] });
-          for (const button of el.querySelectorAll("button")) button.disabled = false;
-
-          if (!result.ok) {
-            // An unverified address cannot sign in, and telling someone to "sign
-            // in again" is a loop with no exit. Send a fresh code and show the
-            // field to type it into.
-            if (result.body?.code === "EMAIL_NOT_VERIFIED") {
-              await auth("/email-otp/send-verification-otp", {
-                email,
-                type: "email-verification",
-              });
-              showVerify(email);
-              return;
-            }
-            say(
-              parent,
-              result.body?.message ?? "That did not work. Check the email and password.",
-            );
-            return;
-          }
-
-          // A successful sign-up on a project that requires verification returns a
-          // user who is not verified yet and no usable session, so the code step
-          // is the next thing rather than an error.
-          if (result.body?.user?.emailVerified === false) {
-            showVerify(email);
-            return;
-          }
-
-          if (await refreshToken()) await route();
-          else showVerify(email);
-        }
-
-        return form;
-      }
-
-      /** The code step, for verifying the address the account was created with. */
-      function showVerify(email) {
-        paint("l1", "active", {
-          number: "01",
-          title: "Confirm your email",
-          blurbHtml:
-            `We emailed a code to <strong>${esc(email)}</strong>. Enter it to confirm ` +
-            "the address. Codes last fifteen minutes.",
-          body: verifyForm(email),
-        });
-      }
-
-      function verifyForm(email) {
-        const form = node(`
-          <form novalidate>
-            <div class="field">
-              <label for="vc">Code</label>
-              <input id="vc" name="code" inputmode="numeric" autocomplete="one-time-code"
-                     maxlength="10" required />
-            </div>
-            <div class="row">
-              <button type="submit">Confirm</button>
-              <button type="button" data-kind="quiet" data-act="resend">Send a new code</button>
-              <button type="button" data-kind="quiet" data-act="back">Start over</button>
-            </div>
-          </form>
-        `);
-        const el = form.querySelector("form");
-
-        el.querySelector('[data-act="back"]').addEventListener("click", async () => {
-          state.token = null;
-          await route();
-        });
-
-        el.querySelector('[data-act="resend"]').addEventListener("click", async (event) => {
-          event.target.disabled = true;
-          const sent = await auth("/email-otp/send-verification-otp", {
-            email,
-            type: "email-verification",
-          });
-          event.target.disabled = false;
-          say(
-            $("l1"),
-            sent.ok ? "A new code is on its way." : "Could not send another code just yet.",
-            sent.ok ? "ok" : undefined,
-          );
-        });
-
-        el.addEventListener("submit", async (event) => {
-          event.preventDefault();
-          const otp = el.querySelector("#vc").value.trim();
-          if (otp === "") {
-            say($("l1"), "Enter the code from the email.");
-            return;
-          }
-          const button = el.querySelector("button");
-          button.disabled = true;
-          const result = await auth("/email-otp/verify-email", { email, otp });
-          button.disabled = false;
-
-          if (!result.ok) {
-            // Our wording, not the provider's. It answers with "Invalid OTP",
-            // which is both jargon and silent about the likeliest cause.
-            say(
-              $("l1"),
-              "That code was not accepted. Codes expire after fifteen minutes, so send " +
-                "a new one if it has been a while.",
-            );
-            return;
-          }
-          // Verification signs the user in by default, so a token should be
-          // available immediately. If it is not, the account is verified and a
-          // plain sign-in will now work.
-          if (await refreshToken()) await route();
-          else {
-            state.token = null;
-            await route();
-            say($("l1"), "Email confirmed. Sign in to continue.", "ok");
-          }
-        });
-
-        return form;
-      }
-
-      // ---- step 2: Bambu --------------------------------------------------
+      // ---- step 1: Bambu --------------------------------------------------
 
       function bambuEmailForm() {
         const form = node(`
@@ -754,7 +635,7 @@
         const el = form.querySelector("form");
         el.addEventListener("submit", async (event) => {
           event.preventDefault();
-          const parent = $("l2");
+          const parent = $("l1");
           const region = el.querySelector("#br").value;
           const email = el.querySelector("#be").value.trim();
           if (email === "") {
@@ -765,12 +646,13 @@
           button.disabled = true;
           const result = await api("POST", "/v1/enrol/code", { region, email });
           button.disabled = false;
+          if (result.status === 401) return;
 
           if (result.status === 204) {
             state.email = email;
             state.region = region;
-            paint("l2", "active", {
-              number: "02",
+            paint("l1", "active", {
+              number: "01",
               title: "Enter the code Bambu emailed you",
               blurbHtml:
                 `Sent to <strong>${esc(email)}</strong>. Codes expire quickly, so use the newest one. ` +
@@ -802,7 +684,7 @@
         el.querySelector('[data-act="back"]').addEventListener("click", () => startBambu());
         el.addEventListener("submit", async (event) => {
           event.preventDefault();
-          const parent = $("l2");
+          const parent = $("l1");
           const code = el.querySelector("#bc").value.trim();
           const button = el.querySelector("button");
           button.disabled = true;
@@ -812,6 +694,7 @@
             code,
           });
           button.disabled = false;
+          if (result.status === 401) return;
 
           if (result.status === 200 && Array.isArray(result.body?.printers)) {
             state.printers = result.body.printers;
@@ -824,17 +707,24 @@
       }
 
       function startBambu() {
-        paint("l2", "active", {
-          number: "02",
+        state.email = null;
+        state.printers = null;
+        state.completedCount = null;
+        stack.hidden = false;
+        boot.hidden = true;
+        paint("l1", "active", {
+          number: "01",
           title: "Connect Bambu Cloud",
           blurbHtml:
             "Bambu emails you a sign-in code. There is no password field here on purpose: " +
             "the code is enough, so your Bambu password never reaches this server.",
           body: bambuEmailForm(),
         });
+        paint("l2", "pending", { number: "02", title: "Choose printers" });
+        paint("l3", "pending", { number: "03", title: "Done" });
       }
 
-      // ---- step 3: printers ----------------------------------------------
+      // ---- step 2: printers ----------------------------------------------
 
       function printerForm() {
         const rows = state.printers
@@ -857,14 +747,14 @@
           <form novalidate>
             <div class="printers">${rows}</div>
             <div class="row">
-              <button type="submit">Save and get my key</button>
+              <button type="submit">Save selection</button>
             </div>
           </form>
         `);
         const el = form.querySelector("form");
         el.addEventListener("submit", async (event) => {
           event.preventDefault();
-          const parent = $("l3");
+          const parent = $("l2");
           const chosen = [...el.querySelectorAll('input[name="p"]:checked')].map((box) => box.value);
           if (chosen.length === 0) {
             say(parent, "Choose at least one printer.");
@@ -878,9 +768,12 @@
           button.disabled = true;
           const result = await api("POST", "/v1/enrol/printers", { deviceIds: chosen });
           button.disabled = false;
+          if (result.status === 401) return;
 
-          if (result.status === 200 && typeof result.body?.screen_key === "string") {
-            state.issuedKey = result.body.screen_key;
+          if (result.status === 204) {
+            state.account = { device_ids: chosen, reauth_required: false };
+            state.printers = null;
+            state.completedCount = chosen.length;
             await route();
             return;
           }
@@ -889,38 +782,26 @@
         return form;
       }
 
-      // ---- step 4: the key ------------------------------------------------
+      // ---- step 3: done and settings -------------------------------------
 
-      function keyPanel() {
+      function donePanel() {
         const wrap = node(`
           <div>
-            <div class="key" id="k"></div>
-            <div class="row">
-              <button type="button" data-act="copy">Copy key</button>
-              <button type="button" data-kind="quiet" data-act="done">I've pasted it</button>
-            </div>
-            <p class="note" style="margin-top:1rem">
-              In TRMNL, open your plugin's settings and paste this into
-              <strong>Screen key</strong>. It is shown once and never stored: if you lose
-              it, come back here and issue a new one.
+            <p>
+              Your printers are connected. TRMNL will refresh the display on its own schedule.
             </p>
+            <div class="row" data-back hidden></div>
           </div>
         `);
-        wrap.querySelector("#k").textContent = state.issuedKey;
-        wrap.querySelector('[data-act="copy"]').addEventListener("click", async (event) => {
-          try {
-            await navigator.clipboard.writeText(state.issuedKey);
-            event.target.textContent = "Copied";
-          } catch {
-            event.target.textContent = "Select it and copy";
-          }
-        });
-        wrap.querySelector('[data-act="done"]').addEventListener("click", async () => {
-          // Clearing the key is what moves this layer from "here is your key" to
-          // the settings panel. Without it the only way onward was a reload.
-          state.issuedKey = null;
-          await route();
-        });
+        if (backUrl !== null) {
+          const link = document.createElement("a");
+          link.className = "action";
+          link.href = backUrl;
+          link.textContent = "Back to TRMNL";
+          const row = wrap.querySelector("[data-back]");
+          row.append(link);
+          row.hidden = false;
+        }
         return wrap;
       }
 
@@ -939,22 +820,12 @@
             </p>
             <div class="row">
               <button type="button" data-act="printers" data-kind="quiet">Change printers</button>
-              <button type="button" data-act="key" data-kind="quiet">Issue a new key</button>
               <button type="button" data-act="del" data-kind="danger">Delete everything</button>
             </div>
           </div>
         `);
 
         wrap.querySelector('[data-act="printers"]').addEventListener("click", () => startBambu());
-        wrap.querySelector('[data-act="key"]').addEventListener("click", async () => {
-          const result = await api("POST", "/v1/enrol/key");
-          if (result.status === 200 && typeof result.body?.screen_key === "string") {
-            state.issuedKey = result.body.screen_key;
-            await route();
-          } else {
-            say($("l4"), result.body?.error ?? "Could not issue a new key.");
-          }
-        });
         wrap.querySelector('[data-act="del"]').addEventListener("click", async (event) => {
           const button = event.target;
           if (button.dataset.confirm !== "yes") {
@@ -963,13 +834,14 @@
             return;
           }
           const result = await api("DELETE", "/v1/account");
+          if (result.status === 401) return;
           if (result.status === 204) {
             state.account = null;
             state.printers = null;
-            state.issuedKey = null;
+            state.completedCount = null;
             await route();
           } else {
-            say($("l4"), result.body?.error ?? "Could not delete the account.");
+            say($("l3"), result.body?.error ?? "Could not delete the account.");
           }
         });
         return wrap;
@@ -977,135 +849,104 @@
 
       // ---- routing --------------------------------------------------------
 
-      /** Decides which layer is active from what is actually known. */
       async function route() {
-        stack.hidden = false;
-        boot.hidden = true;
-
-        if (state.token === null) {
-          paint("l1", "active", {
-            number: "01",
-            title: "Sign in",
-            blurbHtml:
-              "This account is what owns your printer selection, so you can change it or " +
-              "delete it later. Your password goes straight to the identity provider that " +
-              "holds it \u2014 our own server never receives it and nothing here stores it.",
-            body: signInForm(),
-          });
-          for (const id of ["l2", "l3", "l4"]) {
-            paint(id, "pending", { number: id.slice(1).padStart(2, "0"), title: titleOf(id) });
-          }
-          $("whoami").textContent = "";
+        if (manageToken === null) {
+          showAccessPanel(
+            "Open this page from the TRMNL plugin — install it or press its Configure button.",
+          );
           return;
         }
 
-        paint("l1", "done", { number: "01", title: "Sign in", summary: "Signed in" });
+        stack.hidden = false;
+        boot.hidden = true;
 
         const account = await api("GET", "/v1/account");
-        if (account.status === 401) {
-          // The token expired mid-flow. One silent retry, then back to step 1.
-          state.token = null;
-          if (await refreshToken()) return await route();
-          return await route();
-        }
-        state.account = account.status === 200 ? account.body : null;
-        $("whoami").textContent = state.account ? "Set up" : "Not set up yet";
+        if (account.status === 401) return;
+        state.account =
+          account.status === 200 && Array.isArray(account.body?.device_ids) ? account.body : null;
+        $("whoami").textContent =
+          state.completedCount !== null ||
+          (state.account !== null && state.account.device_ids.length > 0)
+            ? "Set up"
+            : "Not set up yet";
 
-        // A freshly listed printer set means step 3 is where the work is.
-        if (state.printers !== null && state.issuedKey === null) {
-          paint("l2", "done", {
-            number: "02",
+        if (state.completedCount !== null) {
+          paint("l1", "done", {
+            number: "01",
             title: "Connect Bambu Cloud",
             summary: "Bambu connected",
           });
+          paint("l2", "done", {
+            number: "02",
+            title: "Choose printers",
+            summary: chosenSummary(state.completedCount),
+          });
           paint("l3", "active", {
             number: "03",
+            title: "You're all set",
+            blurbHtml: "",
+            body: donePanel(),
+          });
+          return;
+        }
+
+        if (state.printers !== null) {
+          paint("l1", "done", {
+            number: "01",
+            title: "Connect Bambu Cloud",
+            summary: "Bambu connected",
+          });
+          paint("l2", "active", {
+            number: "02",
             title: "Choose printers",
             blurbHtml:
               "Up to three. The first one you tick leads the display, because that is the " +
               "one you will read from across the room.",
             body: printerForm(),
           });
-          paint("l4", "pending", { number: "04", title: titleOf("l4") });
+          paint("l3", "pending", { number: "03", title: "Done" });
           return;
         }
 
-        if (state.issuedKey !== null) {
-          paint("l2", "done", { number: "02", title: "", summary: "Bambu connected" });
-          paint("l3", "done", {
+        if (
+          state.account !== null &&
+          (state.account.device_ids.length > 0 || state.account.reauth_required)
+        ) {
+          paint("l1", "done", {
+            number: "01",
+            title: "Connect Bambu Cloud",
+            summary: "Bambu connected",
+          });
+          paint("l2", "done", {
+            number: "02",
+            title: "Choose printers",
+            summary: chosenSummary(state.account.device_ids.length),
+          });
+          paint("l3", "active", {
             number: "03",
-            title: "",
-            summary: chosenSummary(state.account?.device_ids.length ?? null),
-          });
-          paint("l4", "active", {
-            number: "04",
-            title: "Your screen key",
+            title: "Your display is set up",
             blurbHtml: "",
-            body: keyPanel(),
+            body: managePanel(),
           });
           return;
         }
 
-        if (state.account === null) {
-          startBambu();
-          paint("l3", "pending", { number: "03", title: titleOf("l3") });
-          paint("l4", "pending", { number: "04", title: titleOf("l4") });
-          return;
-        }
-
-        // Enrolled already: show the management panel in the last layer.
-        paint("l2", "done", { number: "02", title: "", summary: "Bambu connected" });
-        paint("l3", "done", {
-          number: "03",
-          title: "",
-          summary: chosenSummary(state.account.device_ids.length),
-        });
-        paint("l4", "active", {
-          number: "04",
-          title: "Your display is set up",
-          blurbHtml: "",
-          body: managePanel(),
-        });
+        startBambu();
       }
 
-      /**
-       * A count is never reported as zero when it is merely unknown, which is
-       * the same rule the display itself follows: absent is absent.
-       */
       function chosenSummary(count) {
-        if (count === null) return "Printers chosen";
         return `${count} printer${count === 1 ? "" : "s"} chosen`;
-      }
-
-      function titleOf(id) {
-        return {
-          l1: "Sign in",
-          l2: "Connect Bambu Cloud",
-          l3: "Choose printers",
-          l4: "Paste the key into TRMNL",
-        }[id];
       }
 
       // ---- boot -----------------------------------------------------------
 
       async function start() {
-        const config = await fetch("/v1/config").then((response) =>
-          response.ok ? response.json() : null,
-        );
-        if (config === null || typeof config.auth_base_url !== "string" || config.auth_base_url === "") {
-          boot.dataset.tone = "";
-          boot.textContent =
-            "Sign-in is not configured on this deployment, so there is nothing to set up here yet.";
-          return;
-        }
-        state.authBase = config.auth_base_url.replace(/\/+$/, "");
-        await refreshToken();
+        captureAccess();
         await route();
       }
 
       start().catch(() => {
-        boot.dataset.tone = "";
-        boot.textContent = "Could not load. Reload the page.";
+        showAccessPanel("Could not load. Reload the page.", "");
       });
     </script>
   </body>

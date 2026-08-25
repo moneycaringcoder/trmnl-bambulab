@@ -2,41 +2,50 @@
  * Cloudflare entrypoint for the hosted tier.
  *
  * Three surfaces. The scheduled handler renders each due account's screen and
- * stores it. `GET /v1/screen` serves a stored screen to TRMNL. The enrolment
- * routes under `/v1/enrol/` and `/v1/account` let a signed-in person set the
- * thing up, change it, and delete it.
+ * stores it. The `/trmnl/` routes speak TRMNL's third-party plugin protocol:
+ * install, success webhook, markup, uninstall. The enrolment routes under
+ * `/v1/enrol/` and `/v1/account` let the person who installed the plugin sign
+ * in to Bambu, pick printers, and delete everything.
  *
- * No surface here can reach a printer, and none writes to one. The screen route
- * is a pure read. The enrolment routes do write, and every one of them resolves
- * a verified session before it touches an account: this handler must never grow
- * an unauthenticated route that does.
+ * Identity is TRMNL's. The install handshake exchanges a single-use code for a
+ * per-installation access token; TRMNL presents that token on every request it
+ * makes, and the setup page holds a short-lived management token signed with
+ * our own keyring. There is no other account system.
  *
- * Only the scheduled handler logs. Both HTTP surfaces are deliberately silent,
- * for different reasons — the screen route because an anonymous caller would
- * otherwise control our log volume, and the enrolment routes because that is
- * where an email address enters the system.
+ * No surface here can reach a printer, and none writes to one. Every enrolment
+ * route resolves an installation before it touches an account: this handler
+ * must never grow an unauthenticated route that writes.
+ *
+ * Only the scheduled handler logs. The HTTP surfaces are deliberately silent —
+ * the TRMNL routes because an anonymous caller would otherwise control our log
+ * volume, and the enrolment routes because that is where an email address
+ * enters the system.
  */
 
-import { importKeyringFromEnv, openToken } from "./crypto.ts";
+import { importKeyringFromEnv, openToken, type Keyring } from "./crypto.ts";
 import { completeSignIn, discoverPrinters, requestSignInCode } from "./enrol.ts";
 import {
   deleteAccount,
   getAccount,
-  postKeyRotation,
   postPrinters,
   postSession,
   postSignInCode,
   type EnrolPorts,
   type RouteResult,
 } from "./routes.ts";
-import { SessionVerifier } from "./session.ts";
+import {
+  install,
+  markup,
+  recordInstallSuccess,
+  uninstall,
+  type TrmnlPorts,
+} from "./trmnl.ts";
 import {
   networkDependencies,
   runDueAccounts,
   type AccountCycleSummary,
 } from "./cycle.ts";
 import { createLogger, type LogDetail } from "./log.ts";
-import { serveScreen, type ScreenOutcome } from "./screen.ts";
 import { NeonStore } from "./store-neon.ts";
 
 const logger = createLogger("info");
@@ -71,22 +80,51 @@ async function keyringFrom(env: Env) {
   return await importKeyringFromEnv(env as unknown as Record<string, unknown>);
 }
 
-/**
- * One verifier per isolate, so the key cache survives between requests.
- *
- * Built lazily because the configuration lives in `env`, which is not available
- * at module scope, and rebuilt if that configuration ever changes so a deploy
- * that provisions identity does not need an isolate to recycle first.
- */
-let verifier: SessionVerifier | null = null;
-let verifierBaseUrl: string | undefined;
+/** Where a single-use install code is exchanged. TRMNL's, fixed, never ours. */
+const TRMNL_TOKEN_URL = "https://trmnl.com/oauth/token";
 
-function verifierFor(env: Env): SessionVerifier {
-  if (verifier === null || verifierBaseUrl !== env.NEON_AUTH_BASE_URL) {
-    verifierBaseUrl = env.NEON_AUTH_BASE_URL;
-    verifier = new SessionVerifier({ baseUrl: env.NEON_AUTH_BASE_URL });
+/**
+ * Exchanges an install code at TRMNL's token endpoint.
+ *
+ * TRMNL answers HTTP 200 for both outcomes and distinguishes them in the body,
+ * so this maps `{ error: true }` to a refusal rather than trusting the status
+ * line. The token never reaches a log and is immediately reduced to a tag.
+ */
+async function exchangeCodeAtTrmnl(
+  code: string,
+): Promise<{ ok: true; accessToken: string } | { ok: false }> {
+  let response: Response;
+  try {
+    response = await fetch(TRMNL_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ code }),
+    });
+  } catch {
+    return { ok: false };
   }
-  return verifier;
+  if (!response.ok) return { ok: false };
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return { ok: false };
+  }
+  if (typeof body !== "object" || body === null) return { ok: false };
+  if ("error" in body && body.error) return { ok: false };
+  const token = "access_token" in body ? body.access_token : null;
+  if (typeof token !== "string" || token === "") return { ok: false };
+  return { ok: true, accessToken: token };
+}
+
+function trmnlPortsFrom(store: NeonStore, keyring: Keyring): TrmnlPorts {
+  return {
+    store,
+    keyring,
+    exchangeCode: exchangeCodeAtTrmnl,
+    now: () => Date.now(),
+  };
 }
 
 export default {
@@ -130,16 +168,8 @@ export default {
       });
     }
 
-    // What the setup page needs before anyone has signed in: where the identity
-    // provider lives. Public by construction — the browser talks to it directly,
-    // so it is not a secret and cannot be one. Nothing else is exposed here, and
-    // an empty string is the honest answer on a deployment without identity.
-    if (request.method === "GET" && url.pathname === "/v1/config") {
-      return json({ auth_base_url: env.NEON_AUTH_BASE_URL ?? "" }, 200);
-    }
-
-    if (request.method === "GET" && url.pathname === "/v1/screen") {
-      return await screenResponse(request, env);
+    if (url.pathname.startsWith("/trmnl/")) {
+      return await trmnlResponse(request, env, url);
     }
 
     if (url.pathname.startsWith("/v1/enrol/") || url.pathname === "/v1/account") {
@@ -151,94 +181,126 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 /**
- * The response TRMNL polls.
+ * TRMNL's own surface: install redirect, success webhook, markup, uninstall.
  *
- * Every refusal is a byte-identical 404. An unknown key, a revoked key, a
- * refused address, a key for a deleted account and an account with nothing
- * rendered are one answer on purpose: a caller that can tell them apart has an
- * oracle for guessing keys.
+ * Every request is metered by address before it can reach the database,
+ * because three of the four routes accept anonymous callers up to the moment a
+ * token is verified. A refusal is a plain status with no body detail: the
+ * caller is TRMNL's server or an abuser, and neither needs prose.
  *
- * Nothing is logged on any path. That is not laziness about observability, it
- * is the consequence of the route being open to the internet with no rate
- * limit: if a refusal wrote a log line, an anonymous caller would control our
- * entire log volume. The scheduled handler is where this tier is observable.
- *
- * `Cache-Control: no-store` on both paths. The 200 carries one user's printer
- * state, and a 404 is heuristically cacheable, so an intermediary could
- * otherwise keep a refusal that outlives an enrolment or a key rotation.
+ * Nothing is logged on any path, for the same reason the polling endpoint
+ * never logged: an anonymous caller must not control our log volume.
  */
-async function screenResponse(request: Request, env: Env): Promise<Response> {
-  const allowed = (env.TRMNL_ALLOWED_IPS ?? "")
-    .split(",")
-    .map((address) => address.trim())
-    .filter((address) => address !== "");
-
-  let outcome;
+async function trmnlResponse(request: Request, env: Env, url: URL): Promise<Response> {
+  // The same address ceiling the polling endpoint used, kept for the same
+  // job: bounding what an anonymous caller can spend of our database budget.
   try {
-    outcome = await serveScreen(
-      new NeonStore(env.DATABASE_URL),
-      {
-        allowedAddresses: allowed,
-        addressLimiter: env.SCREEN_ADDRESS_LIMITER,
-        accountLimiter: env.SCREEN_ACCOUNT_LIMITER,
-      },
-      {
-        // A header, never the query string: the key is a bearer credential and
-        // Cloudflare's own invocation logs record the full URL of every request.
-        authorization: request.headers.get("Authorization"),
-        clientAddress: request.headers.get("CF-Connecting-IP"),
-        now: Date.now(),
-      },
-    );
-  } catch {
-    // A database error must not become a 200 with an empty screen. Its text may
-    // name a host or carry credentials, so it is neither logged nor returned.
-    return new Response("Service Unavailable", {
-      status: 503,
-      headers: { "Cache-Control": "no-store" },
+    const permitted = await env.SCREEN_ADDRESS_LIMITER.limit({
+      key: request.headers.get("CF-Connecting-IP") ?? "unknown",
     });
+    if (!permitted.success) {
+      return new Response("Too Many Requests", {
+        status: 429,
+        headers: { "Cache-Control": "no-store", "Retry-After": "60" },
+      });
+    }
+  } catch {
+    // A limiter fault must not take the whole surface down; the token check
+    // below still gates everything that matters.
   }
 
-  return screenHttpResponse(outcome);
+  const store = new NeonStore(env.DATABASE_URL);
+  let keyring: Keyring;
+  try {
+    keyring = await keyringFrom(env);
+  } catch {
+    return serviceUnavailable();
+  }
+  const ports = trmnlPortsFrom(store, keyring);
+  const route = `${request.method} ${url.pathname}`;
+
+  try {
+    // The install redirect: TRMNL sends the user's browser here with a
+    // single-use code. Exchange it, then hand the browser to the setup page
+    // with a short-lived management token in the fragment — the fragment,
+    // not the query, so it never appears in request logs anywhere.
+    if (route === "GET /trmnl/install") {
+      const code = url.searchParams.get("code") ?? "";
+      const callback = url.searchParams.get("installation_callback_url") ?? "";
+      const outcome = await install(ports, code);
+      if (outcome.kind === "refused") {
+        return new Response("The installation link has expired. Install the plugin again.", {
+          status: 400,
+          headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+        });
+      }
+      const destination = new URL("/", url.origin);
+      // The callback is how the user gets back to TRMNL when they finish.
+      // Refused unless it points at TRMNL, so this cannot redirect through us
+      // to anywhere an attacker chose.
+      const back = safeTrmnlCallback(callback);
+      destination.hash = back === null
+        ? `manage=${outcome.manageToken}`
+        : `manage=${outcome.manageToken}&back=${encodeURIComponent(back)}`;
+      return Response.redirect(destination.toString(), 302);
+    }
+
+    if (route === "POST /trmnl/installed") {
+      const body: unknown = await request.json().catch(() => null);
+      const result = await recordInstallSuccess(
+        ports,
+        request.headers.get("Authorization"),
+        body,
+      );
+      if (result === "unauthenticated") return unauthorized();
+      if (result === "invalid") return json({ error: "Send TRMNL's webhook body." }, 400);
+      return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+    }
+
+    if (route === "POST /trmnl/markup") {
+      const outcome = await markup(ports, request.headers.get("Authorization"));
+      if (outcome.kind === "unauthenticated") return unauthorized();
+      return json(outcome.markup, 200);
+    }
+
+    if (route === "POST /trmnl/uninstall") {
+      const result = await uninstall(ports, request.headers.get("Authorization"));
+      if (result === "unauthenticated") return unauthorized();
+      return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+    }
+
+    return notFound();
+  } catch {
+    // A database or crypto failure. Its text can name a host or carry key
+    // material, so it is neither logged nor returned.
+    return serviceUnavailable();
+  }
 }
 
 /**
- * The HTTP form of an outcome, as a function so a test can assert every status
- * without a database or a network.
+ * Accepts a callback only if it is TRMNL's own HTTPS origin.
  *
- * Every refusal that is not a rate limit is a byte-identical 404. An unknown
- * key, a malformed key, a revoked key, a key for a deleted account and an
- * account with nothing rendered are one answer on purpose: a caller that can
- * tell them apart has an oracle for guessing keys.
+ * The install redirect would otherwise be an open redirector: the callback
+ * arrives in *our* query string, so anyone could craft an install link whose
+ * "back to TRMNL" button leads somewhere hostile.
  */
-export function screenHttpResponse(outcome: ScreenOutcome): Response {
-  // Only the account ceiling answers 429, and only a caller already holding
-  // that account's key can reach it, so the status reveals nothing a holder of
-  // the key does not already know. The address ceiling deliberately answers the
-  // same 404 as every other refusal: a 429 there would tell an enumerator that
-  // its *other* attempts were the ones being rejected, which distinguishes a
-  // live key from a dead one.
-  if (outcome.kind === "account-limited") {
-    return new Response("Too Many Requests", {
-      status: 429,
-      headers: {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-store",
-        // Matches the limiter period, so a well-behaved caller waits exactly
-        // long enough rather than guessing.
-        "Retry-After": "60",
-      },
-    });
+export function safeTrmnlCallback(callback: string): string | null {
+  if (callback === "") return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(callback);
+  } catch {
+    return null;
   }
+  if (parsed.protocol !== "https:") return null;
+  if (parsed.hostname !== "trmnl.com" && !parsed.hostname.endsWith(".trmnl.com")) return null;
+  return parsed.toString();
+}
 
-  if (outcome.kind !== "served") return notFound();
-
-  return new Response(outcome.body, {
-    status: 200,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
-    },
+function unauthorized(): Response {
+  return new Response("Unauthorized", {
+    status: 401,
+    headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
   });
 }
 
@@ -253,24 +315,18 @@ function notFound(): Response {
 }
 
 /**
- * The authenticated surface, behind a verified session on every route.
+ * The authenticated surface, behind a verified management token on every route.
  *
- * Unlike the screen endpoint, these routes are allowed to say what went wrong:
- * their caller is a signed-in person looking at a form, and a form that refuses
- * without saying why is unusable. What they never say is anything Bambu told us
- * about whether an address exists, and they never carry a cloud token.
+ * Unlike the TRMNL surface, these routes are allowed to say what went wrong:
+ * their caller is a person looking at a form, and a form that refuses without
+ * saying why is unusable. What they never say is anything Bambu told us about
+ * whether an address exists, and they never carry a cloud token.
  *
  * Nothing is logged here either, and that matters more on this surface than on
  * the last one: this is where an email address first enters the system, so a
  * single well-meaning log line would breach `AGENTS.md`.
  */
 async function enrolResponse(request: Request, env: Env, url: URL): Promise<Response> {
-  const verifier = verifierFor(env);
-  // Identity unprovisioned means this whole surface does not exist, rather than
-  // existing and trusting the caller. A deployment without an identity provider
-  // must expose nothing, not everything.
-  if (!verifier.configured) return notFound();
-
   const store = new NeonStore(env.DATABASE_URL);
   let keyring;
   try {
@@ -282,7 +338,6 @@ async function enrolResponse(request: Request, env: Env, url: URL): Promise<Resp
   const ports: EnrolPorts = {
     store,
     keyring,
-    verifier,
     limiter: env.ENROL_LIMITER,
     requestSignInCode,
     completeSignIn,
@@ -297,8 +352,6 @@ async function enrolResponse(request: Request, env: Env, url: URL): Promise<Resp
   let body: unknown = null;
   if (request.method === "POST") {
     const raw = await request.text().catch(() => "");
-    // A bodyless POST is legitimate: rotating a key takes no arguments, and
-    // demanding `{}` for it would be a rule that exists only to be tripped over.
     if (raw.trim() !== "") {
       try {
         body = JSON.parse(raw);
@@ -318,8 +371,6 @@ async function enrolResponse(request: Request, env: Env, url: URL): Promise<Resp
         return routeResponse(await postSession(ports, authorization, body));
       case "POST /v1/enrol/printers":
         return routeResponse(await postPrinters(ports, authorization, body));
-      case "POST /v1/enrol/key":
-        return routeResponse(await postKeyRotation(ports, authorization));
       case "GET /v1/account":
         return routeResponse(await getAccount(ports, authorization));
       case "DELETE /v1/account":
@@ -348,10 +399,6 @@ export function routeResponse(result: RouteResult): Response {
       return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
     case "printers":
       return json({ printers: result.printers }, 200);
-    case "key-issued":
-      // The one response in this Worker that carries a screen key. It is shown
-      // once and never stored, so a caller that loses it must rotate.
-      return json({ screen_key: result.screenKey }, 200);
     case "account":
       return json({ device_ids: result.deviceIds, reauth_required: result.reauthRequired }, 200);
     case "unauthenticated":

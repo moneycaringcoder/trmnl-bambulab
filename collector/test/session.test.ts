@@ -31,7 +31,6 @@ function account(overrides: Partial<Account> = {}): Account {
     ownerTag: "f".repeat(64),
     region: "global",
     token: { keyId: "k1", nonce: "AAAA", ciphertext: "AAAA" },
-    screenKeyFingerprint: "a".repeat(64),
     deviceIds: [DEVICE],
     maxPayloadBytes: 2048,
     exportJobName: false,

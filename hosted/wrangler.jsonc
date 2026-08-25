@@ -8,6 +8,10 @@
   "compatibility_date": "2026-08-24",
   "compatibility_flags": ["nodejs_compat"],
 
+  "rules": [
+    { "type": "Text", "globs": ["**/*.liquid"], "fallthrough": true }
+  ],
+
   // Five minutes because Bambu is the thing being protected, not TRMNL. The
   // twelve-pushes-an-hour ceiling no longer applies — the hosted tier is polled
   // rather than pushing — but the cron is now the only thing that reads Bambu,
@@ -36,9 +40,10 @@
   // step would be the only build step in this package.
   //
   // `run_worker_first` is the load-bearing part: without it the asset server
-  // answers first and shadows the API, so `/v1/screen` would return the page
-  // instead of a render and TRMNL would poll HTML forever. Every route the
-  // Worker owns is listed, and anything else falls through to the page.
+  // answers first and shadows the API. `/trmnl/*` matters most — TRMNL's
+  // install redirect and markup POSTs must reach the Worker, and the SPA
+  // fallback would otherwise answer the install handshake with the page and a
+  // 200. Every route the Worker owns is listed; anything else is the page.
   "assets": {
     "directory": "./public",
     "html_handling": "auto-trailing-slash",
@@ -47,7 +52,7 @@
     // asset server otherwise answers it with the page, which makes the cron
     // untestable in dev. No such route exists in production, where the Worker
     // runs first and answers 404 like any other unknown path.
-    "run_worker_first": ["/v1/*", "/healthz", "/__scheduled"]
+    "run_worker_first": ["/v1/*", "/trmnl/*", "/healthz", "/__scheduled"]
   },
 
   // Workers Logs indexes the one-object-per-line events from log.ts.
@@ -76,24 +81,13 @@
 
   // Two counters, because the two things worth stopping have nothing in common.
   //
-  // SCREEN_ADDRESS_LIMITER is consulted *before* the account lookup, so it is a
-  // real ceiling on what an anonymous caller can make us spend in Postgres. A
-  // counter consulted after the lookup would bound nothing: the query is
-  // already paid for by then.
+  // SCREEN_ADDRESS_LIMITER is consulted *before* anything on the `/trmnl/`
+  // surface can reach Postgres, so it is a real ceiling on what an anonymous
+  // caller can make us spend. A counter consulted after the lookup would bound
+  // nothing: the query is already paid for by then. At 300 per minute per
+  // Cloudflare location, TRMNL's own markup requests never approach it.
   //
-  // It counts every caller that is not allowlisted, including TRMNL, because
-  // whether a key is real is exactly what the lookup is for and there is no
-  // cheaper signal beforehand. So the number is sized for TRMNL at scale rather
-  // than for one user: at 300 per minute per Cloudflare location, and a plugin
-  // refresh of fifteen minutes, one location serves a few thousand accounts
-  // before legitimate polling could approach it. Populate TRMNL_ALLOWED_IPS
-  // from https://trmnl.com/api/ips and TRMNL skips this counter entirely, which
-  // is the durable answer and the reason that variable is load-bearing.
-  //
-  // SCREEN_ACCOUNT_LIMITER is keyed by the account's key fingerprint - never
-  // the bearer key, which a platform counter must never see. One counter per
-  // account, bounding what a single misconfigured plugin or a single leaked key
-  // can cost.
+  // ENROL_LIMITER below bounds what one installation can make Bambu do.
   //
   // Both are per location, so the real ceiling is a multiple of these numbers.
   // They are cost guards rather than accounting, which is what the platform
@@ -103,11 +97,6 @@
       "name": "SCREEN_ADDRESS_LIMITER",
       "namespace_id": "1001",
       "simple": { "limit": 300, "period": 60 }
-    },
-    {
-      "name": "SCREEN_ACCOUNT_LIMITER",
-      "namespace_id": "1002",
-      "simple": { "limit": 120, "period": 60 }
     },
     {
       // Bounds one signed-in person, keyed by their owner tag. The route that
@@ -123,6 +112,13 @@
 
   // Wrangler validates these names without putting either secret value in Git.
   // Add a new TOKEN_KEY_<ID> here while retaining old keys during key rotation.
+  // TOKEN_KEY_K1 in particular must be the *same* key that sealed the existing
+  // rows: a fresh one silently orphans every enrolment. A deploy that forgets
+  // one fails instead of shipping a Worker whose cron cannot open a token.
+  //
+  // NEON_AUTH_BASE_URL is gone deliberately: identity is TRMNL's now. The
+  // install handshake mints a per-installation access token, and there is no
+  // identity provider, no JWKS, and no sign-in of our own to configure.
   "secrets": {
     "required": ["DATABASE_URL", "TOKEN_KEY_K1"]
   },
@@ -131,29 +127,10 @@
   // new tokens, while older required keys stay available to open existing rows
   // during a rotation.
   //
-  // TRMNL_ALLOWED_IPS is a comma-separated list from https://trmnl.com/api/ips,
-  // and it is empty on purpose. The screen key is the authentication; the
-  // allowlist is depth. Shipping a guessed address list would lock TRMNL out of
-  // every account at once, which is a worse failure than not having the extra
-  // layer. Fill it in once the real list has been checked.
-  //
-  // NEON_AUTH_BASE_URL is the identity provider's base URL, for example
-  // `https://<endpoint>.aws.neon.tech/<database>/auth`. The expected issuer and
-  // audience are both derived from its origin, so there is no second setting to
-  // get wrong. It is not secret — the browser talks to it too — but it names
-  // infrastructure, so it is set as a secret rather than committed here, and it
-  // must not also appear in `vars`: a var and a secret of the same name are the
-  // same binding, and a deploy rewrites vars.
+  // The key id is not secret: it chooses which configured key seals new tokens,
+  // while older required keys stay available to open existing rows during a
+  // rotation.
   "vars": {
-    "TOKEN_KEY_CURRENT_ID": "k1",
-    "TRMNL_ALLOWED_IPS": ""
-  },
-
-  // Named so a deploy that forgot one fails instead of shipping a Worker whose
-  // sign-in answers 404 or whose cron cannot open a single stored token.
-  // TOKEN_KEY_K1 in particular must be the *same* key that sealed the existing
-  // rows: a fresh one silently orphans every enrolment.
-  "secrets": {
-    "required": ["DATABASE_URL", "TOKEN_KEY_K1", "NEON_AUTH_BASE_URL"]
+    "TOKEN_KEY_CURRENT_ID": "k1"
   }
 }

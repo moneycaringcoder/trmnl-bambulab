@@ -587,3 +587,44 @@ socket and a few kilobytes — about 0.2 MB. 512 MB covers roughly a thousand
 accounts. RAM is not the constraint; Neon write rate, file descriptors and
 Bambu's tolerance are, in that order.
 
+## D19. Identity is TRMNL's: the hosted tier is a third-party plugin
+
+**Chosen.** The hosted tier speaks TRMNL's marketplace protocol instead of being
+a Private Plugin: TRMNL redirects an installing user to us with a single-use
+code, we exchange it for a per-installation access token, TRMNL presents that
+token on every markup request, and we render the four layout fragments from our
+own Liquid templates inside the Worker. `hosted/src/trmnl.ts` is the protocol
+and `hosted/src/markup.ts` is the renderer.
+
+**What it deleted.** The entire identity apparatus: Neon Auth (email, password,
+verification codes, JWKS verification in `session.ts`) and the screen key with
+its rotation, fingerprints and polling endpoint. A user now installs, signs in
+to Bambu with an emailed code, picks printers, done — no account of ours, no
+credential to paste into TRMNL, no key to lose. The install handshake *is* the
+sign-in, which is as close to the charter's "sign-in-and-done" as the platform
+allows.
+
+**The token is treated like the screen key was.** Stored only as a keyed HMAC
+tag; a database leak yields nothing replayable. The setup page gets its own
+short-lived management token, signed with the same keyring, delivered in the URL
+fragment so no request log anywhere records it — the TRMNL access token itself
+never reaches a browser.
+
+**Rendering moved to us, deliberately.** TRMNL's marketplace contract has the
+plugin's server return HTML for all four layouts, so the Worker renders the
+repository's own `src/*.liquid` through liquidjs, verified against trmnlp's own
+renderer as an oracle: identical text content on all four layouts. One design
+source for both tiers survives.
+
+**Rejected: keeping both identity systems.** A fallback path that kept screen
+keys "just in case" would keep every obligation the keys carried — rotation,
+fingerprints, the no-oracle 404 discipline — for a credential with no remaining
+legitimate holder. The self-hosted tier never used any of it; its webhook plugin
+is untouched.
+
+**Not verifiable without the owner.** The three seams to TRMNL's real servers:
+the live code exchange, the real success webhook, and TRMNL's real markup POST.
+Everything on our side of each seam is driven by tests with TRMNL's documented
+request shapes, and the whole flow ran against real Postgres. The management-URL
+question — whether TRMNL passes anything identifying to it — is recorded in
+`docs/HANDOFF.md` as the one known unknown, with a working fallback.

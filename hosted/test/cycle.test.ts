@@ -10,7 +10,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   importKeyring,
   newScreenKey,
-  screenKeyFingerprint,
   sealToken,
   type Keyring,
 } from "../src/crypto.ts";
@@ -104,7 +103,6 @@ async function createAccount(
     ownerTag: ownerTagForTest(),
     region: "global",
     token: await sealToken(keys, id, TOKEN),
-    screenKeyFingerprint: await screenKeyFingerprint(screenKey),
     deviceIds: [DEVICE_ID],
     maxPayloadBytes: options.maxPayloadBytes ?? 2_000,
     exportJobName: false,
@@ -228,13 +226,11 @@ describe("runDueAccounts", () => {
     const store = new MemoryStore();
     const keys = await keyring();
     const badId = ["account", "bad"].join("-");
-    const badScreenKey = newScreenKey();
     await store.createAccount({
       id: badId,
       ownerTag: ownerTagForTest(),
       region: "global",
       token: await sealToken(keys, ["different", "account"].join("-"), TOKEN),
-      screenKeyFingerprint: await screenKeyFingerprint(badScreenKey),
       deviceIds: [DEVICE_ID],
       maxPayloadBytes: 2_000,
       exportJobName: false,

@@ -1,36 +1,40 @@
 /**
  * The authenticated surface.
  *
- * Every test here goes through a real `SessionVerifier` with real Ed25519
- * signatures, because the property that matters most on this surface is that an
- * unauthenticated caller cannot reach an account. A fake verifier would make
- * that property untestable and every one of these tests would still pass.
+ * Every test here goes through a real HMAC-signed management token bound to a
+ * real installation row, because the property that matters most on this surface
+ * is that a caller without an installation cannot reach an account. A fake
+ * identify step would make that property untestable and every one of these
+ * tests would still pass.
  */
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { importKeyring, openToken, ownerTag, screenKeyFingerprint, type Keyring } from "../src/crypto.ts";
+import { importKeyring, openToken, type Keyring } from "../src/crypto.ts";
 import type { DiscoveredPrinter } from "../src/enrol.ts";
 import {
   deleteAccount,
   getAccount,
-  postKeyRotation,
   postPrinters,
   postSession,
   postSignInCode,
   type EnrolPorts,
   type RouteResult,
 } from "../src/routes.ts";
-import type { RateLimiter } from "../src/screen.ts";
-import { SessionVerifier } from "../src/session.ts";
+import type { RateLimiter } from "../src/limits.ts";
+import {
+  identifyInstallation,
+  install,
+  installationOwnerTags,
+  signManageToken,
+  MANAGE_TOKEN_TTL_MS,
+  type TrmnlPorts,
+} from "../src/trmnl.ts";
 import { MemoryStore } from "../src/store-memory.ts";
 import type { Account, Region } from "../src/store.ts";
 
-const ORIGIN = "https://ep-routes.example";
-const BASE = `${ORIGIN}/db/auth`;
 const NOW = Date.UTC(2026, 7, 24, 12, 0, 0);
 const EMAIL = "owner@example.com";
 const CODE = "418418";
-
 /** Two printers, with serial-shaped ids assembled at runtime, never pasted. */
 function printerFixtures(): DiscoveredPrinter[] {
   const serial = (suffix: string) => `${"0".repeat(8)}${suffix}`;
@@ -54,55 +58,31 @@ interface Harness {
   listFails(): void;
 }
 
-interface Signer {
-  jwk: Record<string, unknown>;
-  token(subject: string): Promise<string>;
-}
-
-function b64u(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-const seg = (value: unknown) => b64u(new TextEncoder().encode(JSON.stringify(value)));
-
-async function newSigner(): Promise<Signer> {
-  // `generateKey` is typed as returning a key or a pair; Ed25519 always yields
-  // a pair, and the union is not narrowable from the arguments.
-  const pair = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, [
-    "sign",
-    "verify",
-  ])) as CryptoKeyPair;
-  const publicJwk = await crypto.subtle.exportKey("jwk", pair.publicKey);
-
-  return {
-    jwk: { kty: "OKP", crv: "Ed25519", x: publicJwk.x, kid: "k1" },
-    async token(subject) {
-      const signing = `${seg({ alg: "EdDSA", kid: "k1" })}.${seg({
-        iss: ORIGIN,
-        aud: ORIGIN,
-        sub: subject,
-        iat: Math.floor(NOW / 1000),
-        exp: Math.floor(NOW / 1000) + 900,
-      })}`;
-      const signature = await crypto.subtle.sign(
-        "Ed25519",
-        pair.privateKey,
-        new TextEncoder().encode(signing),
-      );
-      return `Bearer ${signing}.${b64u(new Uint8Array(signature))}`;
+/**
+ * Installs the plugin the way the real handshake does, and returns the Bearer
+ * value the setup page would hold.
+ */
+async function installFor(
+  store: MemoryStore,
+  keyring: Keyring,
+  accessToken: string,
+): Promise<string> {
+  const ports: TrmnlPorts = {
+    store,
+    keyring,
+    async exchangeCode() {
+      return { ok: true, accessToken };
     },
+    now: () => NOW,
   };
+  const outcome = await install(ports, "code");
+  if (outcome.kind !== "installed") throw new Error("install failed in the harness");
+  return `Bearer ${outcome.manageToken}`;
 }
 
 async function harness(options: { limiter?: RateLimiter } = {}): Promise<Harness> {
   const store = new MemoryStore();
   const keyring = await importKeyring({ k1: await generateKeyBase64() }, "k1");
-  const signer = await newSigner();
-  const verifier = new SessionVerifier({
-    baseUrl: BASE,
-    fetchImpl: (async () => Response.json({ keys: [signer.jwk] })) as typeof fetch,
-  });
 
   const printers = printerFixtures();
   const sent: { region: Region; email: string }[] = [];
@@ -113,7 +93,6 @@ async function harness(options: { limiter?: RateLimiter } = {}): Promise<Harness
   const ports: EnrolPorts = {
     store,
     keyring,
-    verifier,
     // Always supplied, because the type requires it: a route whose only abuse
     // bound could be omitted is the shape the production type now forbids.
     limiter: options.limiter ?? { async limit() { return { success: true }; } },
@@ -146,8 +125,8 @@ async function harness(options: { limiter?: RateLimiter } = {}): Promise<Harness
     ports,
     store,
     keyring,
-    auth: await signer.token("subject-one"),
-    otherAuth: await signer.token("subject-two"),
+    auth: await installFor(store, keyring, "trmnl-token-one"),
+    otherAuth: await installFor(store, keyring, "trmnl-token-two"),
     printers,
     sent,
     completed,
@@ -168,18 +147,30 @@ async function generateKeyBase64(): Promise<string> {
   return btoa(binary);
 }
 
-/** Runs the whole flow and returns the issued key plus the stored account. */
-async function enrolFully(h: Harness): Promise<{ screenKey: string; account: Account }> {
+/** Runs the whole flow and returns the stored account, via the installation link. */
+async function enrolFully(h: Harness): Promise<{ account: Account }> {
   await postSignInCode(h.ports, h.auth, { region: "global", email: EMAIL });
   await postSession(h.ports, h.auth, { region: "global", email: EMAIL, code: CODE });
-  const issued = await postPrinters(h.ports, h.auth, {
+  const done = await postPrinters(h.ports, h.auth, {
     deviceIds: [h.printers[0]?.deviceId],
   });
-  if (issued.kind !== "key-issued") throw new Error(`enrolment failed: ${issued.kind}`);
+  if (done.kind !== "done") throw new Error(`enrolment failed: ${done.kind}`);
 
-  const account = await h.store.pollByScreenKey(await screenKeyFingerprint(issued.screenKey));
-  if (account === null) throw new Error("the issued key does not resolve to an account");
-  return { screenKey: issued.screenKey, account: account.account };
+  // The account must now be reachable the way the markup route reaches it:
+  // through the installation's own link, not through any tag fallback.
+  const trmnlPorts: TrmnlPorts = {
+    store: h.store,
+    keyring: h.keyring,
+    async exchangeCode() {
+      return { ok: false };
+    },
+    now: () => NOW,
+  };
+  const installation = await identifyInstallation(trmnlPorts, "Bearer trmnl-token-one");
+  if (installation?.accountId == null) throw new Error("printers did not link the account");
+  const account = await h.store.accountById(installation.accountId);
+  if (account === null) throw new Error("the linked account does not exist");
+  return { account };
 }
 
 let h: Harness;
@@ -188,7 +179,7 @@ beforeEach(async () => {
 });
 
 describe("the whole flow", () => {
-  it("signs in, lists printers, and issues one key", async () => {
+  it("signs in, lists printers, and links the installation", async () => {
     const asked = await postSignInCode(h.ports, h.auth, { region: "global", email: EMAIL });
     expect(asked).toEqual({ kind: "done" });
     expect(h.sent).toEqual([{ region: "global", email: EMAIL }]);
@@ -201,16 +192,16 @@ describe("the whole flow", () => {
     if (session.kind !== "printers") throw new Error("sign-in did not return printers");
     expect(session.printers.map((printer) => printer.name)).toEqual(["Workshop", "Spare"]);
 
-    const issued = await postPrinters(h.ports, h.auth, {
+    const done = await postPrinters(h.ports, h.auth, {
       deviceIds: [h.printers[1]?.deviceId],
     });
-    if (issued.kind !== "key-issued") throw new Error("no key was issued");
-    // 43 base64url characters: the shape the screen endpoint's free check wants.
-    expect(issued.screenKey).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(done).toEqual({ kind: "done" });
 
-    // The key resolves, and the chosen printer is the one stored.
-    const poll = await h.store.pollByScreenKey(await screenKeyFingerprint(issued.screenKey));
-    expect(poll?.account.deviceIds).toEqual([h.printers[1]?.deviceId]);
+    // The chosen printer is the one stored, reachable through the installation
+    // exactly the way the markup route will reach it.
+    const shown = await getAccount(h.ports, h.auth);
+    if (shown.kind !== "account") throw new Error("the account is not readable");
+    expect(shown.deviceIds).toEqual([h.printers[1]?.deviceId]);
   });
 
   it("stores the cloud token sealed, and can open it again", async () => {
@@ -223,22 +214,17 @@ describe("the whole flow", () => {
     await expect(openToken(h.keyring, account.id, account.token)).resolves.toBe("cloud-token-1");
   });
 
-  it("keeps one account per person across repeated sign-ins", async () => {
+  it("keeps one account per installation across repeated sign-ins", async () => {
     const first = await enrolFully(h);
     await postSession(h.ports, h.auth, { region: "global", email: EMAIL, code: CODE });
     const again = await postPrinters(h.ports, h.auth, {
       deviceIds: [h.printers[0]?.deviceId],
     });
-    if (again.kind !== "key-issued") throw new Error("re-enrolment did not issue a key");
+    expect(again).toEqual({ kind: "done" });
 
-    const tags = [await ownerTag(h.keyring.current.tagKey, "subject-one")];
-    const account = await h.store.accountByOwner(tags);
-    expect(account?.id).toBe(first.account.id);
-    // A new key, and the old one stops working: rotation, not accumulation.
-    expect(again.screenKey).not.toBe(first.screenKey);
-    await expect(
-      h.store.pollByScreenKey(await screenKeyFingerprint(first.screenKey)),
-    ).resolves.toBeNull();
+    const second = await enrolFully(h);
+    // Rotation of the choice, not accumulation of accounts.
+    expect(second.account.id).toBe(first.account.id);
   });
 
   it("re-authenticating replaces the token and clears the refusal flag", async () => {
@@ -269,7 +255,6 @@ describe("authentication", () => {
         await postSignInCode(h.ports, header, body),
         await postSession(h.ports, header, body),
         await postPrinters(h.ports, header, body),
-        await postKeyRotation(h.ports, header),
         await getAccount(h.ports, header),
         await deleteAccount(h.ports, header),
       ];
@@ -280,32 +265,22 @@ describe("authentication", () => {
     expect(await h.store.accountById(account.id)).not.toBeNull();
   });
 
-  it("refuses when identity is not provisioned, even with a real token", async () => {
-    const unconfigured: EnrolPorts = {
-      ...h.ports,
-      verifier: new SessionVerifier({ baseUrl: undefined }),
-    };
-
-    expect((await getAccount(unconfigured, h.auth)).kind).toBe("unauthenticated");
-    expect((await postSignInCode(unconfigured, h.auth, { region: "global", email: EMAIL })).kind).toBe(
-      "unauthenticated",
-    );
-    // And it did not reach Bambu on the way to refusing.
-    expect(h.sent).toEqual([]);
+  it("refuses an expired management token", async () => {
+    await enrolFully(h);
+    // Signed by the real signer, for a moment already long past.
+    const expired = await signManageToken(h.keyring, "some-id", NOW - MANAGE_TOKEN_TTL_MS * 2);
+    expect((await getAccount(h.ports, `Bearer ${expired}`)).kind).toBe("unauthenticated");
   });
 
-  // One signed-in person must not be able to read or change another's account.
-  it("keeps two identities separate", async () => {
+  // One installation must not be able to read or change another's account.
+  it("keeps two installations separate", async () => {
     const mine = await enrolFully(h);
 
     expect((await getAccount(h.ports, h.otherAuth)).kind).toBe("no-account");
-    expect((await postKeyRotation(h.ports, h.otherAuth)).kind).toBe("no-account");
     expect((await deleteAccount(h.ports, h.otherAuth)).kind).toBe("no-account");
 
-    // Mine is untouched, and its key still works.
-    await expect(
-      h.store.pollByScreenKey(await screenKeyFingerprint(mine.screenKey)),
-    ).resolves.not.toBeNull();
+    // Mine is untouched.
+    expect(await h.store.accountById(mine.account.id)).not.toBeNull();
   });
 });
 
@@ -343,13 +318,13 @@ describe("what a route will not say", () => {
       deviceIds: [h.printers[0]?.deviceId],
     });
     const account = await getAccount(h.ports, h.auth);
-    const tag = await ownerTag(h.keyring.current.tagKey, "subject-one");
+    const tags = await installationOwnerTags(h.keyring, "any-installation");
+    const tag = tags[0] ?? "";
 
     for (const result of [asked, session, issued, account]) {
       const serialized = JSON.stringify(result);
       expect(serialized).not.toContain("cloud-token");
       expect(serialized).not.toContain(tag);
-      expect(serialized).not.toContain("subject-one");
     }
   });
 });
@@ -427,15 +402,16 @@ describe("the printer picker", () => {
     wide.printers.push(...many);
 
     await postSession(wide.ports, wide.auth, { region: "global", email: EMAIL, code: CODE });
-    const issued = await postPrinters(wide.ports, wide.auth, {
+    const done = await postPrinters(wide.ports, wide.auth, {
       deviceIds: many.map((printer) => printer.deviceId),
     });
-    if (issued.kind !== "key-issued") throw new Error("no key issued");
+    expect(done).toEqual({ kind: "done" });
 
-    const poll = await wide.store.pollByScreenKey(await screenKeyFingerprint(issued.screenKey));
-    expect(poll?.account.deviceIds.length).toBe(3);
+    const shown = await getAccount(wide.ports, wide.auth);
+    if (shown.kind !== "account") throw new Error("the account is not readable");
+    expect(shown.deviceIds.length).toBe(3);
     // The user's order is kept, because the first printer leads the display.
-    expect(poll?.account.deviceIds).toEqual(many.slice(0, 3).map((printer) => printer.deviceId));
+    expect(shown.deviceIds).toEqual(many.slice(0, 3).map((printer) => printer.deviceId));
   });
 
   it("refuses an empty selection rather than storing one", async () => {
@@ -454,39 +430,15 @@ describe("the printer picker", () => {
   });
 });
 
-describe("rotation and deletion", () => {
-  it("retires the old key when a new one is issued", async () => {
-    const first = await enrolFully(h);
-    const rotated = await postKeyRotation(h.ports, h.auth);
-    if (rotated.kind !== "key-issued") throw new Error("rotation issued no key");
-
-    expect(rotated.screenKey).not.toBe(first.screenKey);
-    await expect(
-      h.store.pollByScreenKey(await screenKeyFingerprint(first.screenKey)),
-    ).resolves.toBeNull();
-    await expect(
-      h.store.pollByScreenKey(await screenKeyFingerprint(rotated.screenKey)),
-    ).resolves.not.toBeNull();
-  });
-
-  it("keeps the chosen printers through a rotation", async () => {
+describe("deletion", () => {
+  it("deletes the account and its screen", async () => {
     const { account } = await enrolFully(h);
-    const rotated = await postKeyRotation(h.ports, h.auth);
-    if (rotated.kind !== "key-issued") throw new Error("rotation issued no key");
-
-    const poll = await h.store.pollByScreenKey(await screenKeyFingerprint(rotated.screenKey));
-    expect(poll?.account.deviceIds).toEqual(account.deviceIds);
-  });
-
-  it("deletes the account, its screen, and its key", async () => {
-    const { screenKey, account } = await enrolFully(h);
     await h.store.writeScreen(account.id, { body: "{}", renderedAt: NOW });
 
     expect(await deleteAccount(h.ports, h.auth)).toEqual({ kind: "done" });
 
     expect(await h.store.accountById(account.id)).toBeNull();
     expect(await h.store.readScreen(account.id)).toBeNull();
-    expect(await h.store.pollByScreenKey(await screenKeyFingerprint(screenKey))).toBeNull();
   });
 
   it("lets the same person enrol again after deleting", async () => {

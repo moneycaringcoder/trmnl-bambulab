@@ -7,9 +7,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { screenKeyFingerprint } from "../src/crypto.ts";
 import { MemoryStore } from "../src/store-memory.ts";
-import type { Account } from "../src/store.ts";
+import type { Account, Installation } from "../src/store.ts";
 import { ownerTagForTest } from "./helpers.ts";
 
 /**
@@ -19,9 +18,8 @@ import { ownerTagForTest } from "./helpers.ts";
  */
 const ANY_RENDER = Number.MAX_SAFE_INTEGER;
 
-async function account(label: string): Promise<Omit<Account, "reauthRequired">> {
+function account(label: string): Omit<Account, "reauthRequired"> {
   const id = ["account", label, crypto.randomUUID()].join("-");
-  const presentedScreenKey = ["screen", label, crypto.randomUUID()].join("-");
   return {
     id,
     ownerTag: ownerTagForTest(),
@@ -31,10 +29,19 @@ async function account(label: string): Promise<Omit<Account, "reauthRequired">> 
       nonce: btoa(["nonce", label, crypto.randomUUID()].join("-")),
       ciphertext: btoa(["ciphertext", label, crypto.randomUUID()].join("-")),
     },
-    screenKeyFingerprint: await screenKeyFingerprint(presentedScreenKey),
     deviceIds: [["D", label, crypto.randomUUID()].join("-")],
     maxPayloadBytes: 2_000,
     exportJobName: false,
+  };
+}
+
+function installation(label: string): Installation {
+  return {
+    id: ["installation", label, crypto.randomUUID()].join("-"),
+    accessTokenTag: ownerTagForTest(),
+    userUuid: null,
+    pluginSettingId: null,
+    accountId: null,
   };
 }
 
@@ -220,52 +227,77 @@ describe("MemoryStore", () => {
     });
   });
 
-  it("finds an account by screen key fingerprint even when reauthentication is required", async () => {
+  it("finds an installation by any token tag candidate and returns null for unknown tags", async () => {
     const store = new MemoryStore();
-    const original = await account("screen-lookup");
-    await store.createAccount(original);
-    const unknown = await screenKeyFingerprint(
-      ["unknown", "screen", crypto.randomUUID()].join("-"),
-    );
+    const original = installation("token-match");
+    const unknown = ownerTagForTest();
+    await store.createInstallation(original);
 
-    await expect(store.pollByScreenKey(original.screenKeyFingerprint)).resolves.toMatchObject({
-      account: {
-        id: original.id,
-        reauthRequired: false,
-      },
-      screen: null,
-    });
-    await expect(store.pollByScreenKey(unknown)).resolves.toBeNull();
-
-    await store.markReauthRequired(original.id);
-
-    await expect(store.pollByScreenKey(original.screenKeyFingerprint)).resolves.toMatchObject({
-      account: {
-        id: original.id,
-        reauthRequired: true,
-      },
-      screen: null,
-    });
+    await expect(
+      store.installationByTokenTag([unknown, original.accessTokenTag]),
+    ).resolves.toEqual(original);
+    await expect(
+      store.installationByTokenTag([original.accessTokenTag, unknown]),
+    ).resolves.toEqual(original);
+    await expect(store.installationByTokenTag([unknown])).resolves.toBeNull();
   });
 
-  it("retires the old fingerprint when replacing a screen key", async () => {
+  it("refuses duplicate installation ids and token tags", async () => {
     const store = new MemoryStore();
-    const original = await account("screen-rotation");
-    await store.createAccount(original);
-    const replacement = await screenKeyFingerprint(
-      ["replacement", "screen", crypto.randomUUID()].join("-"),
+    const original = installation("unique");
+    const duplicateId = installation("duplicate-id");
+    duplicateId.id = original.id;
+    const duplicateTag = installation("duplicate-tag");
+    duplicateTag.accessTokenTag = original.accessTokenTag;
+    await store.createInstallation(original);
+
+    await expect(store.createInstallation(duplicateId)).rejects.toThrow(
+      "that installation already exists",
     );
+    await expect(store.createInstallation(duplicateTag)).rejects.toThrow(
+      "that access token tag already exists",
+    );
+    await expect(store.installationById(duplicateTag.id)).resolves.toBeNull();
+  });
 
-    await store.replaceScreenKey(original.id, replacement);
+  it("records installation user details and links an account without creating unknown rows", async () => {
+    const store = new MemoryStore();
+    const original = installation("update");
+    const userUuid = ["user", crypto.randomUUID()].join("-");
+    const accountId = ["account", crypto.randomUUID()].join("-");
+    const unknownId = ["unknown", crypto.randomUUID()].join("-");
+    await store.createInstallation(original);
 
-    await expect(store.pollByScreenKey(original.screenKeyFingerprint)).resolves.toBeNull();
-    await expect(store.pollByScreenKey(replacement)).resolves.toMatchObject({
-      account: {
-        id: original.id,
-        screenKeyFingerprint: replacement,
-      },
-      screen: null,
+    await store.recordInstallationUser(original.id, userUuid, 42);
+    await store.linkInstallationAccount(original.id, accountId);
+
+    await expect(store.installationById(original.id)).resolves.toEqual({
+      ...original,
+      userUuid,
+      pluginSettingId: 42,
+      accountId,
     });
+
+    await expect(
+      store.recordInstallationUser(unknownId, userUuid, null),
+    ).resolves.toBeUndefined();
+    await expect(
+      store.linkInstallationAccount(unknownId, accountId),
+    ).resolves.toBeUndefined();
+    await expect(store.installationById(unknownId)).resolves.toBeNull();
+  });
+
+  it("deletes an installation row and its token tag lookup", async () => {
+    const store = new MemoryStore();
+    const original = installation("delete");
+    await store.createInstallation(original);
+
+    await store.deleteInstallation(original.id);
+
+    await expect(store.installationById(original.id)).resolves.toBeNull();
+    await expect(
+      store.installationByTokenTag([original.accessTokenTag]),
+    ).resolves.toBeNull();
   });
 
   it("replaceToken clears the reauthentication flag", async () => {
@@ -295,24 +327,20 @@ describe("MemoryStore", () => {
     const screen = { body: renderedBody("first"), renderedAt: Date.now() };
     const expected = { ...screen };
 
-    await expect(store.pollByScreenKey(original.screenKeyFingerprint)).resolves.toMatchObject({
-      screen: null,
-    });
+    await expect(store.readScreen(original.id)).resolves.toBeNull();
     await store.writeScreen(original.id, screen);
     screen.body = renderedBody("mutated-input");
     screen.renderedAt += 1;
 
-    const firstPoll = await store.pollByScreenKey(original.screenKeyFingerprint);
-    expect(firstPoll?.screen).toEqual(expected);
-    if (firstPoll === null || firstPoll.screen === null) {
+    const firstRead = await store.readScreen(original.id);
+    expect(firstRead).toEqual(expected);
+    if (firstRead === null) {
       throw new Error("the written screen was unexpectedly absent");
     }
-    firstPoll.screen.body = renderedBody("mutated-result");
-    firstPoll.screen.renderedAt += 1;
+    firstRead.body = renderedBody("mutated-result");
+    firstRead.renderedAt += 1;
 
-    await expect(store.pollByScreenKey(original.screenKeyFingerprint)).resolves.toMatchObject({
-      screen: expected,
-    });
+    await expect(store.readScreen(original.id)).resolves.toEqual(expected);
   });
 
   it("defensively copies accounts and their nested values", async () => {
@@ -327,14 +355,14 @@ describe("MemoryStore", () => {
     created.token.nonce = btoa(["mutated", crypto.randomUUID()].join("-"));
     created.deviceIds.length = 0;
 
-    const poll = await store.pollByScreenKey(original.screenKeyFingerprint);
-    expect(poll?.account).toMatchObject({
+    const stored = await store.accountById(original.id);
+    expect(stored).toMatchObject({
       token: expectedToken,
       deviceIds: expectedDeviceIds,
     });
-    if (poll === null) throw new Error("the account was unexpectedly absent");
-    poll.account.token.keyId = ["mutated", crypto.randomUUID()].join("-");
-    poll.account.deviceIds.length = 0;
+    if (stored === null) throw new Error("the account was unexpectedly absent");
+    stored.token.keyId = ["mutated", crypto.randomUUID()].join("-");
+    stored.deviceIds.length = 0;
 
     await expect(store.accountById(original.id)).resolves.toMatchObject({
       token: expectedToken,
@@ -342,10 +370,13 @@ describe("MemoryStore", () => {
     });
   });
 
-  it("deleting an account also removes its screen and fingerprint", async () => {
+  it("deleting an account cascades its screen without deleting its installation", async () => {
     const store = new MemoryStore();
     const original = await account("delete");
+    const linkedInstallation = installation("account-delete");
+    linkedInstallation.accountId = original.id;
     await store.createAccount(original);
+    await store.createInstallation(linkedInstallation);
     await store.writeScreen(original.id, {
       body: renderedBody("delete"),
       renderedAt: Date.now(),
@@ -354,7 +385,14 @@ describe("MemoryStore", () => {
     await store.deleteAccount(original.id);
 
     await expect(store.accountById(original.id)).resolves.toBeNull();
-    await expect(store.pollByScreenKey(original.screenKeyFingerprint)).resolves.toBeNull();
     await expect(store.readScreen(original.id)).resolves.toBeNull();
+    // The installation survives with its link nulled, mirroring the schema's
+    // ON DELETE SET NULL: TRMNL still has the plugin installed, and the next
+    // enrolment relinks it.
+    const survivor = { ...linkedInstallation, accountId: null };
+    await expect(store.installationById(linkedInstallation.id)).resolves.toEqual(survivor);
+    await expect(
+      store.installationByTokenTag([linkedInstallation.accessTokenTag]),
+    ).resolves.toEqual(survivor);
   });
 });

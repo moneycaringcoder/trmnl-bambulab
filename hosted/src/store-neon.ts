@@ -17,7 +17,7 @@
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 
 import type { SealedToken } from "./crypto.ts";
-import type { Account, PollResult, Screen, Store } from "./store.ts";
+import type { Account, Installation, Screen, Store } from "./store.ts";
 
 interface RowDrift {
   ok: false;
@@ -78,10 +78,6 @@ function parseAccount(value: unknown): ParseResult<Account> {
   if (typeof ciphertext !== "string" || ciphertext.length === 0) {
     return drift("token_ciphertext", "a non-empty string");
   }
-  const screenKeyFingerprint = value.screen_key_fingerprint;
-  if (typeof screenKeyFingerprint !== "string" || screenKeyFingerprint.length === 0) {
-    return drift("screen_key_fingerprint", "a non-empty string");
-  }
   const deviceIds = value.device_ids;
   if (
     !Array.isArray(deviceIds) ||
@@ -109,12 +105,46 @@ function parseAccount(value: unknown): ParseResult<Account> {
       ownerTag,
       region,
       token: { keyId, nonce, ciphertext },
-      screenKeyFingerprint,
       deviceIds,
       maxPayloadBytes: maxPayloadBytes as number,
       exportJobName,
       reauthRequired,
     },
+  };
+}
+
+function parseInstallation(value: unknown): ParseResult<Installation> {
+  if (!isDatabaseRow(value)) return drift("installations row", "an object");
+
+  const id = value.id;
+  if (typeof id !== "string" || id.length === 0) {
+    return drift("id", "a non-empty string");
+  }
+  const accessTokenTag = value.access_token_tag;
+  if (typeof accessTokenTag !== "string" || accessTokenTag.length === 0) {
+    return drift("access_token_tag", "a non-empty string");
+  }
+  const userUuid = value.user_uuid;
+  if (userUuid !== null && (typeof userUuid !== "string" || userUuid.length === 0)) {
+    return drift("user_uuid", "null or a non-empty string");
+  }
+  // Postgres bigint arrives as a string through the HTTP driver; both shapes
+  // are accepted rather than trusting driver configuration.
+  const rawSettingId = value.plugin_setting_id;
+  let pluginSettingId: number | null;
+  if (rawSettingId === null) pluginSettingId = null;
+  else if (Number.isSafeInteger(rawSettingId)) pluginSettingId = rawSettingId as number;
+  else if (typeof rawSettingId === "string" && /^\d+$/.test(rawSettingId)) {
+    pluginSettingId = Number(rawSettingId);
+  } else return drift("plugin_setting_id", "null or an integer");
+  const accountId = value.account_id;
+  if (accountId !== null && (typeof accountId !== "string" || accountId.length === 0)) {
+    return drift("account_id", "null or a non-empty string");
+  }
+
+  return {
+    ok: true,
+    value: { id, accessTokenTag, userUuid, pluginSettingId, accountId },
   };
 }
 
@@ -187,7 +217,6 @@ export class NeonStore implements Store {
           account.token_key_id,
           account.token_nonce,
           account.token_ciphertext,
-          account.screen_key_fingerprint,
           account.device_ids,
           account.max_payload_bytes,
           account.export_job_name,
@@ -202,7 +231,6 @@ export class NeonStore implements Store {
         token_key_id,
         token_nonce,
         token_ciphertext,
-        screen_key_fingerprint,
         device_ids,
         max_payload_bytes,
         export_job_name,
@@ -233,7 +261,6 @@ export class NeonStore implements Store {
         token_key_id,
         token_nonce,
         token_ciphertext,
-        screen_key_fingerprint,
         device_ids,
         max_payload_bytes,
         export_job_name,
@@ -256,7 +283,6 @@ export class NeonStore implements Store {
         token_key_id,
         token_nonce,
         token_ciphertext,
-        screen_key_fingerprint,
         device_ids,
         max_payload_bytes,
         export_job_name,
@@ -271,42 +297,73 @@ export class NeonStore implements Store {
     return parsed.ok ? parsed.value : null;
   }
 
-  async pollByScreenKey(fingerprint: string): Promise<PollResult | null> {
-    // This is the refresh hot path: one equality query against the UNIQUE
-    // constraint's index and no dependent read. Deliberately do not filter on
-    // reauth_required. A refused token should leave its last rendered screen
-    // readable; a stale display that says it is stale is better than a blank one.
+  async installationByTokenTag(candidateTags: readonly string[]): Promise<Installation | null> {
+    // The markup hot path: one equality query against the UNIQUE constraint's
+    // index. Every candidate tag, because a tag cannot be recomputed after a key
+    // rotation without the token, which is deliberately not kept.
     const result: unknown = await this.sql`
-      SELECT
-        accounts.id,
-        accounts.owner_tag,
-        accounts.region,
-        accounts.token_key_id,
-        accounts.token_nonce,
-        accounts.token_ciphertext,
-        accounts.screen_key_fingerprint,
-        accounts.device_ids,
-        accounts.max_payload_bytes,
-        accounts.export_job_name,
-        accounts.reauth_required,
-        screens.body,
-        screens.rendered_at::double precision AS rendered_at
-      FROM accounts
-      LEFT JOIN screens ON screens.account_id = accounts.id
-      WHERE accounts.screen_key_fingerprint = ${fingerprint}
+      SELECT id, access_token_tag, user_uuid, plugin_setting_id, account_id
+      FROM trmnl_installations
+      WHERE access_token_tag = ANY(${[...candidateTags]})
+      LIMIT 1
     `;
     const row = rowsFrom(result)[0];
     if (row === undefined) return null;
+    const parsed = parseInstallation(row);
+    return parsed.ok ? parsed.value : null;
+  }
 
-    const account = parseAccount(row);
-    if (!account.ok) return null;
-    if (isDatabaseRow(row) && row.body === null) {
-      return { account: account.value, screen: null };
-    }
+  async installationById(id: string): Promise<Installation | null> {
+    const result: unknown = await this.sql`
+      SELECT id, access_token_tag, user_uuid, plugin_setting_id, account_id
+      FROM trmnl_installations
+      WHERE id = ${id}
+    `;
+    const row = rowsFrom(result)[0];
+    if (row === undefined) return null;
+    const parsed = parseInstallation(row);
+    return parsed.ok ? parsed.value : null;
+  }
 
-    const screen = parseScreen(row);
-    if (!screen.ok) throw new Error(screen.reason);
-    return { account: account.value, screen: screen.value };
+  async createInstallation(installation: Installation): Promise<void> {
+    await this.sql`
+      INSERT INTO trmnl_installations (
+        id, access_token_tag, user_uuid, plugin_setting_id, account_id
+      ) VALUES (
+        ${installation.id},
+        ${installation.accessTokenTag},
+        ${installation.userUuid},
+        ${installation.pluginSettingId},
+        ${installation.accountId}
+      )
+    `;
+  }
+
+  async recordInstallationUser(
+    id: string,
+    userUuid: string,
+    pluginSettingId: number | null,
+  ): Promise<void> {
+    await this.sql`
+      UPDATE trmnl_installations
+      SET user_uuid = ${userUuid}, plugin_setting_id = ${pluginSettingId}
+      WHERE id = ${id}
+    `;
+  }
+
+  async linkInstallationAccount(id: string, accountId: string): Promise<void> {
+    await this.sql`
+      UPDATE trmnl_installations
+      SET account_id = ${accountId}
+      WHERE id = ${id}
+    `;
+  }
+
+  async deleteInstallation(id: string): Promise<void> {
+    await this.sql`
+      DELETE FROM trmnl_installations
+      WHERE id = ${id}
+    `;
   }
 
   async createAccount(account: Omit<Account, "reauthRequired">): Promise<Account> {
@@ -321,7 +378,6 @@ export class NeonStore implements Store {
         token_key_id,
         token_nonce,
         token_ciphertext,
-        screen_key_fingerprint,
         device_ids,
         max_payload_bytes,
         export_job_name,
@@ -333,7 +389,6 @@ export class NeonStore implements Store {
         ${account.token.keyId},
         ${account.token.nonce},
         ${account.token.ciphertext},
-        ${account.screenKeyFingerprint},
         ${account.deviceIds},
         ${account.maxPayloadBytes},
         ${account.exportJobName},
@@ -349,7 +404,6 @@ export class NeonStore implements Store {
         nonce: account.token.nonce,
         ciphertext: account.token.ciphertext,
       },
-      screenKeyFingerprint: account.screenKeyFingerprint,
       deviceIds: [...account.deviceIds],
       maxPayloadBytes: account.maxPayloadBytes,
       exportJobName: account.exportJobName,
@@ -373,14 +427,6 @@ export class NeonStore implements Store {
     await this.sql`
       UPDATE accounts
       SET device_ids = ${[...deviceIds]}
-      WHERE id = ${accountId}
-    `;
-  }
-
-  async replaceScreenKey(accountId: string, fingerprint: string): Promise<void> {
-    await this.sql`
-      UPDATE accounts
-      SET screen_key_fingerprint = ${fingerprint}
       WHERE id = ${accountId}
     `;
   }

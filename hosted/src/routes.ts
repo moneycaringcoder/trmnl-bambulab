@@ -1,19 +1,23 @@
 /**
- * The authenticated surface: sign in, pick printers, rotate a key, delete.
+ * The authenticated surface: sign in to Bambu, pick printers, delete.
  *
  * Separate from `worker.ts` so every route is testable without a Worker, and
  * separate from `enrol.ts` so the Bambu conversation stays independent of who is
  * asking. This module is the only place the two meet.
  *
+ * Identity is a TRMNL installation. The install handshake minted a management
+ * token (see `trmnl.ts`), the setup page presents it as a Bearer token, and
+ * every route resolves it before touching an account. There is no sign-up and
+ * no password: TRMNL is the account system, and Bambu sign-in below is the
+ * printer credential, not an identity.
+ *
  * The rules every route here follows:
  *
- * **No identity, no route.** Each one resolves a session first and refuses
- * before touching an account. When identity is not provisioned the whole surface
- * answers 404 rather than falling back to trusting the caller, so a half-
- * configured deployment exposes nothing rather than exposing everything.
+ * **No identity, no route.** Refuse before touching an account.
  *
- * **One person, one account.** The owner tag is unique, so signing in twice
- * updates an account instead of accumulating them.
+ * **One installation, one account.** The owner tag is unique and derived from
+ * the installation id, so signing in twice updates an account instead of
+ * accumulating them.
  *
  * **Nothing is logged.** Not an email, not a device id, not an account id, not a
  * token, and not the text of a cloud error. `AGENTS.md` requires that, and this
@@ -21,15 +25,14 @@
  * likely to break it.
  *
  * **A cloud token never leaves.** It is sealed on arrival and the sealed form is
- * all that is stored. No response body here contains one, and no response body
- * contains a screen key except the single one that issues it.
+ * all that is stored. No response body here contains one.
  */
 
-import { newAccountId, newScreenKey, ownerTagCandidates, screenKeyFingerprint, sealToken, type Keyring } from "./crypto.ts";
+import { newAccountId, sealToken, type Keyring } from "./crypto.ts";
 import { chooseFrom, type DiscoveredPrinter, type EnrolFailure } from "./enrol.ts";
-import type { RateLimiter } from "./screen.ts";
-import type { SessionVerifier } from "./session.ts";
-import type { Account, Region, Store } from "./store.ts";
+import type { RateLimiter } from "./limits.ts";
+import { installationOwnerTags, verifyManageToken } from "./trmnl.ts";
+import type { Account, Installation, Region, Store } from "./store.ts";
 
 /**
  * The ceiling on printers per account.
@@ -45,16 +48,14 @@ const DEFAULT_MAX_PAYLOAD_BYTES = 2048;
 export interface EnrolPorts {
   store: Store;
   keyring: Keyring;
-  verifier: SessionVerifier;
   /**
-   * Bounds what one signed-in person can do, keyed by their owner tag.
+   * Bounds what one installation can do, keyed by its owner tag.
    *
    * Required, not optional. It was optional so tests could omit it, and that
    * made the fail-closed guarantee below depend on configuration: dropping the
    * binding from `wrangler.jsonc` would silently remove the only bound on making
-   * Bambu email arbitrary addresses. That is the same class of mistake as the
-   * fault this guarantee exists to prevent, arriving by a different route, so
-   * the type now refuses it and tests supply a permissive one explicitly.
+   * Bambu email arbitrary addresses. The type refuses that, and tests supply a
+   * permissive limiter explicitly.
    */
   limiter: RateLimiter;
   /** Injected so a test never reaches Bambu, and never reads a clock. */
@@ -87,10 +88,8 @@ export type RouteResult =
   /** Success with nothing to say. */
   | { kind: "done" }
   | { kind: "printers"; printers: PublicPrinter[] }
-  /** The one response that ever carries a screen key. */
-  | { kind: "key-issued"; screenKey: string }
   | { kind: "account"; deviceIds: string[]; reauthRequired: boolean }
-  /** No session, or identity is not configured. Indistinguishable outside. */
+  /** No installation, or the token expired. Indistinguishable outside. */
   | { kind: "unauthenticated" }
   | { kind: "no-account" }
   | { kind: "throttled" }
@@ -131,15 +130,31 @@ function parseCode(value: unknown): string | null {
   return /^[0-9]{4,10}$/.test(code) ? code : null;
 }
 
+/**
+ * Resolves the installation a management token speaks for, and its account.
+ *
+ * `null` for a missing, malformed, expired or forged token — one answer for all
+ * four, so the route is not an oracle for guessing tokens. The account is
+ * resolved through the installation's own link first and the owner tag second,
+ * which keeps an account reachable across the moment the link is being written.
+ */
 async function identify(
   ports: EnrolPorts,
   authorization: string | null,
-): Promise<{ ok: true; account: Account | null; tags: string[] } | { ok: false }> {
-  const outcome = await ports.verifier.identify(authorization, ports.now);
-  if (outcome.kind !== "identified") return { ok: false };
+): Promise<{ installation: Installation; account: Account | null; tags: string[] } | null> {
+  const match = /^bearer\s+(\S+)$/i.exec((authorization ?? "").trim());
+  const token = match?.[1];
+  if (token === undefined) return null;
 
-  const tags = await ownerTagCandidates(ports.keyring, outcome.identity.subject);
-  return { ok: true, account: await ports.store.accountByOwner(tags), tags };
+  const installation = await verifyManageToken(ports.keyring, ports.store, token, ports.now);
+  if (installation === null) return null;
+
+  const tags = await installationOwnerTags(ports.keyring, installation.id);
+  const account =
+    installation.accountId !== null
+      ? await ports.store.accountById(installation.accountId)
+      : await ports.store.accountByOwner(tags);
+  return { installation, account, tags };
 }
 
 /**
@@ -178,7 +193,7 @@ export async function postSignInCode(
   body: unknown,
 ): Promise<RouteResult> {
   const session = await identify(ports, authorization);
-  if (!session.ok) return { kind: "unauthenticated" };
+  if (session === null) return { kind: "unauthenticated" };
 
   const tag = session.tags[0];
   if (tag === undefined) return { kind: "unauthenticated" };
@@ -216,7 +231,7 @@ export async function postSession(
   body: unknown,
 ): Promise<RouteResult> {
   const session = await identify(ports, authorization);
-  if (!session.ok) return { kind: "unauthenticated" };
+  if (session === null) return { kind: "unauthenticated" };
 
   const tag = session.tags[0];
   if (tag === undefined) return { kind: "unauthenticated" };
@@ -263,11 +278,11 @@ export async function postSession(
 }
 
 /**
- * Records the chosen printers and issues the screen key.
+ * Records the chosen printers and binds the account to the installation.
  *
- * The key is minted here rather than at account creation because this is the
- * first moment the account can render anything, and a key handed out before
- * then would point at a display that stays blank.
+ * The link is made here rather than at account creation because this is the
+ * first moment the account can render anything: TRMNL's markup requests start
+ * resolving to a real screen exactly when there is a screen to resolve to.
  */
 export async function postPrinters(
   ports: EnrolPorts,
@@ -275,7 +290,7 @@ export async function postPrinters(
   body: unknown,
 ): Promise<RouteResult> {
   const session = await identify(ports, authorization);
-  if (!session.ok) return { kind: "unauthenticated" };
+  if (session === null) return { kind: "unauthenticated" };
   const account = session.account;
   if (account === null) return { kind: "no-account" };
 
@@ -321,18 +336,8 @@ export async function postPrinters(
   }
 
   await ports.store.replacePrinters(account.id, chosen.deviceIds);
-  return await issueKey(ports, account.id);
-}
-
-/** Retires the current screen key and issues a replacement. */
-export async function postKeyRotation(
-  ports: EnrolPorts,
-  authorization: string | null,
-): Promise<RouteResult> {
-  const session = await identify(ports, authorization);
-  if (!session.ok) return { kind: "unauthenticated" };
-  if (session.account === null) return { kind: "no-account" };
-  return await issueKey(ports, session.account.id);
+  await ports.store.linkInstallationAccount(session.installation.id, account.id);
+  return { kind: "done" };
 }
 
 /**
@@ -340,14 +345,15 @@ export async function postKeyRotation(
  *
  * `AGENTS.md` requires deletion to actually delete, and the store's contract
  * carries that obligation: the row and its rendered screen go, with no tombstone
- * holding a token, a device id, or a fingerprint.
+ * holding a token or a device id. The installation row survives — TRMNL still
+ * has this plugin installed — and can enrol a fresh Bambu account.
  */
 export async function deleteAccount(
   ports: EnrolPorts,
   authorization: string | null,
 ): Promise<RouteResult> {
   const session = await identify(ports, authorization);
-  if (!session.ok) return { kind: "unauthenticated" };
+  if (session === null) return { kind: "unauthenticated" };
   if (session.account === null) return { kind: "no-account" };
 
   await ports.store.deleteAccount(session.account.id);
@@ -360,7 +366,7 @@ export async function getAccount(
   authorization: string | null,
 ): Promise<RouteResult> {
   const session = await identify(ports, authorization);
-  if (!session.ok) return { kind: "unauthenticated" };
+  if (session === null) return { kind: "unauthenticated" };
   if (session.account === null) return { kind: "no-account" };
 
   return {
@@ -370,26 +376,17 @@ export async function getAccount(
   };
 }
 
-async function issueKey(ports: EnrolPorts, accountId: string): Promise<RouteResult> {
-  const screenKey = newScreenKey();
-  await ports.store.replaceScreenKey(accountId, await screenKeyFingerprint(screenKey));
-  // The only response in this module that carries a key. It is not stored, so
-  // this is the one moment it exists anywhere we control.
-  return { kind: "key-issued", screenKey };
-}
-
 async function createFor(ports: EnrolPorts, ownerTag: string, region: Region): Promise<string> {
   const id = newAccountId();
-  const placeholder = newScreenKey();
+  // Sealed placeholder rather than an empty column, so the token columns'
+  // NOT NULL is a real guarantee. Replaced immediately by the caller, which
+  // has the real token.
+  const placeholder = crypto.randomUUID();
   await ports.store.createAccount({
     id,
     ownerTag,
     region,
-    // Replaced immediately by the caller, which has the real token. A sealed
-    // placeholder rather than an empty column, so the column's NOT NULL is a
-    // real guarantee rather than one the application works around.
     token: await sealToken(ports.keyring, id, placeholder),
-    screenKeyFingerprint: await screenKeyFingerprint(placeholder),
     deviceIds: [],
     maxPayloadBytes: DEFAULT_MAX_PAYLOAD_BYTES,
     exportJobName: false,

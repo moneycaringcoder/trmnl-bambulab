@@ -13,7 +13,8 @@
     "hosted:key": "node --input-type=module -e \"import('./src/crypto.ts').then(async ({ generateKeyBase64 }) => console.log(await generateKeyBase64()))\""
   },
   "dependencies": {
-    "@neondatabase/serverless": "^1.1.0"
+    "@neondatabase/serverless": "^1.1.0",
+    "liquidjs": "^10.29.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",

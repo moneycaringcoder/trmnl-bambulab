@@ -1,20 +1,40 @@
 # Hosted tier
 
-The hosted tier is the install-nothing form of the plugin. A Cloudflare Worker wakes on a five-minute Cron Trigger, reads each selected printer through Bambu Cloud's HTTP interface, builds the same normalized payload as the self-hosted bridge, and stores it. TRMNL then fetches that stored render from `GET /v1/screen` with an `Authorization: Bearer <screen key>` header, on whatever schedule the user's plugin uses. It never sends a request or command to a printer.
+The hosted tier is the install-nothing form of the plugin, as a TRMNL
+third-party plugin. A Cloudflare Worker wakes on a five-minute Cron Trigger,
+reads each selected printer through Bambu Cloud's HTTP interface, builds the
+same normalized payload as the self-hosted bridge, and stores it. TRMNL POSTs to
+`/trmnl/markup` with its per-installation Bearer token on whatever schedule the
+user chose, and the Worker renders the stored payload through the repository's
+own Liquid templates into the four layout fragments TRMNL wants. It never sends
+a request or command to a printer.
 
-The key is a header and never a query parameter, because a credential in a URL is written down by everything the request passes through. TRMNL's Polling strategy interpolates a form field into a header, which is what makes this possible — see `docs/TRMNL-PLUGIN.md`.
+**Identity is TRMNL's.** Installing the plugin redirects the user here with a
+single-use code; the Worker exchanges it at `trmnl.com/oauth/token` for the
+installation's access token and keeps only a keyed HMAC tag of it. The setup
+page holds a short-lived management token signed with the same keyring. There is
+no sign-up, no password, no verification email and no screen key: the entire
+account system this replaced is gone, and `src/trmnl.ts` is what stands in its
+place. Bambu sign-in is unchanged and separate — it is the printer credential,
+an emailed code, never a password.
 
-**The cron writes and the endpoint reads**, and that separation is the design rather than an implementation detail. TRMNL polls on a schedule the user controls, so an endpoint that read Bambu on demand would let one user's refresh setting decide how hard we hit Bambu, would put two cloud round-trips inside TRMNL's request timeout, and would let anyone holding a key generate Bambu load at will. Serving a stored render makes Bambu's load a function of our cron alone.
+**The cron and collector write, the markup route reads**, and that separation is
+the design rather than an implementation detail. TRMNL asks on a schedule the
+user controls, so a route that read Bambu on demand would let one user's refresh
+setting decide how hard we hit Bambu, would put two cloud round-trips inside
+TRMNL's request timeout, and would let anyone holding a token generate Bambu
+load at will. Serving a stored render makes Bambu's load a function of our own
+schedule alone.
 
-Because TRMNL pulls, **we never receive the user's webhook URL** — the bearer credential that authorizes drawing on their display. It is not in the schema and cannot leak from here. See `docs/DECISIONS.md` D11.
+Because TRMNL pulls, **we never receive the user's webhook URL** — the bearer
+credential that authorizes drawing on their display. It is not in the schema and
+cannot leak from here. See `docs/DECISIONS.md` D11.
 
-Neon stores account configuration, sealed Bambu Cloud tokens, the hash of each screen key, and the rendered screens. Tokens are encrypted with AES-256-GCM before they reach Postgres, with the account id authenticated as additional data so moving ciphertext between accounts yields nothing usable. Device ids are printer identifiers and screen keys are bearer credentials; neither may be logged.
-
-## What works and what does not, plainly
-
-The render-and-serve path is complete and has been exercised against a real throwaway Postgres: the migration applies, `text[]` and `bigint` survive the HTTP driver, the delete cascade removes a rendered screen with its account, the UNIQUE fingerprint constraint refuses a collision, and a sealed token still opens after a database round trip.
-
-**Nothing creates an account yet.** There is no sign-in flow, no printer picker, and no self-service revoke or delete endpoint, so a freshly deployed Worker would have no accounts and would serve 404 to every request. Enrolment needs an identity provider provisioned in the owner's Neon project, which only the owner can do. Read the obligation table at the bottom of this file before deploying anything: two of the six hosted gates in `AGENTS.md` are open — self-service revoke and delete, and identity — and a third, the threat model, is only partly met. Those are the ones that matter for anyone other than the owner.
+Neon stores TRMNL installations (as token tags, never tokens), account
+configuration, sealed Bambu Cloud tokens, and the rendered screens. Tokens are
+encrypted with AES-256-GCM before they reach Postgres, with the account id
+authenticated as additional data so moving ciphertext between accounts yields
+nothing usable. Device ids are printer identifiers; they may never be logged.
 
 ## Install and check
 
@@ -28,16 +48,22 @@ pnpm test
 
 Node 22.18 or newer is required. Local tests use the complete in-memory store and do not contact Neon, Bambu Cloud, or TRMNL.
 
-## Apply the migration
+## Apply the migrations
 
-`migrations/0001_initial.sql` is plain Postgres SQL. Apply it once with either method:
+`migrations/` is plain Postgres SQL, numbered; apply in order. Either method:
 
-1. Open the Neon SQL Editor for the intended branch, paste the migration, and run it.
+1. Open the Neon SQL Editor for the intended branch, paste each migration, and run it.
 2. Configure a direct, non-pooled connection as a libpq service and run, from the repository root:
 
    ```sh
-   PGSERVICE=your-direct-neon-service psql -v ON_ERROR_STOP=1 -f hosted/migrations/0001_initial.sql
+   PGSERVICE=your-direct-neon-service psql -v ON_ERROR_STOP=1 \
+     -f hosted/migrations/0001_initial.sql \
+     -f hosted/migrations/0002_trmnl_installations.sql
    ```
+
+An existing deployment that ran 0001 needs only 0002. It creates the
+installations table and drops the screen-key column, which is not reversible:
+every stored screen key stops resolving, which is the point of the conversion.
 
 Use Neon's direct endpoint for migrations, not the hostname ending in `-pooler`. Keep the password in `.pgpass` or another credential manager rather than in the command line, shell history, or this repository. Test migrations on an isolated Neon branch before applying them to production.
 
@@ -49,15 +75,12 @@ The Worker expects:
 
 - `DATABASE_URL`: a Worker secret containing the application connection string.
 - `TOKEN_KEY_K1`: a Worker secret containing a base64 AES-256 key.
-- `NEON_AUTH_BASE_URL`: a Worker secret containing the identity provider's base
-  URL. Not sensitive — the browser talks to it too — but it names infrastructure,
-  so it is set rather than committed. It must not also appear in `vars`: a var
-  and a secret of the same name are one binding, and a deploy rewrites vars.
 - `TOKEN_KEY_CURRENT_ID`: the non-secret key id `k1` in Worker configuration.
 
-All three are listed in `secrets.required` in `wrangler.jsonc`, so a deploy that
-is missing one fails rather than shipping a Worker whose sign-in answers 404 or
-whose cron cannot open a single stored token.
+Both secrets are listed in `secrets.required` in `wrangler.jsonc`, so a deploy
+that is missing one fails rather than shipping a Worker whose cron cannot open a
+single stored token. There is no identity-provider setting: identity is TRMNL's,
+established per installation during the install handshake.
 
 ### The first deploy
 
@@ -125,10 +148,10 @@ The hosted obligations in [`AGENTS.md`](../AGENTS.md) are launch gates. Current 
 | Obligation | Status |
 | --- | --- |
 | Tokens encrypted at rest with real key management | **Met in code and operations documentation.** AES-256-GCM uses fresh nonces, key ids support overlap during rotation, keys live in Cloudflare Worker secrets, and the schema has no plaintext-token column. Production secret access policy and recovery procedures still require operator configuration. |
-| Written, current threat model | **Partly met, and reviewed with this change.** [`SECURITY.md`](../SECURITY.md) documents token, webhook and telemetry exposure, and this document adds database and key-rotation handling. Identity, onboarding and deletion all changed when the enrolment surface landed, so the threat model gained three entries with it: a leaked screen key, a compromised hosted session, and what the hosted database reveals if it leaks. It remains *partly* met because it has had no external review, and it must be revisited again whenever identity, onboarding, deletion or deployment changes. |
-| User revocation and deletion that actually deletes | **Met.** `DELETE /v1/account` deletes the signed-in person's account behind a verified session, and `POST /v1/enrol/key` rotates a leaked screen key. Both were driven end to end against workerd, a real Postgres and a real JWKS: after a delete, the account row is gone, the rendered screen went with it through `ON DELETE CASCADE`, the retired key answers 404 at `/v1/screen`, and the same identity can enrol again because no tombstone holds the unique owner tag. A rotation issues a new key, the old one stops resolving immediately, and the chosen printers survive. Another signed-in identity gets 404 for both routes rather than touching the account. |
-| Per-account rate limits and abuse controls | **Met for the surface that exists.** Two Cloudflare rate-limit bindings, chosen over a Durable Object because they run in-process, need no storage, and add no hop to every poll. `SCREEN_ADDRESS_LIMITER` is keyed by client address and consulted **before** the account lookup, at 300 per minute per Cloudflare location, so it is a real ceiling on database work rather than a status code applied after the query was already paid for. An allowlisted address skips it, which is why populating `TRMNL_ALLOWED_IPS` from `https://trmnl.com/api/ips` matters: it exempts TRMNL exactly, instead of relying on a limit its traffic never reaches. `SCREEN_ACCOUNT_LIMITER` is keyed by the account's key fingerprint — never the bearer key — at 120 per minute, bounding what one misconfigured plugin or one leaked key can cost. A key that is not 43 base64url characters is refused before consuming either budget or a query. Only the account ceiling answers `429`, because reaching it requires already holding that account's key; the address ceiling answers the same `404` as every other refusal, so no status distinguishes a live key from a dead one. Both of those two fail *open* deliberately: they are volume guards rather than authentication, and failing closed on a limiter fault would blank every display at once. Verified against a real runtime and a real Postgres, in two runs, because neither could answer both questions: with a working database 400 guesses from one address all answered `404`, proving no status distinguishes a live key from a dead one; with the database deliberately unreachable, which is the only way to observe where the ceiling fell, exactly 300 of 400 reached the database and 100 were refused before it. While `TRMNL_ALLOWED_IPS` is empty, note that TRMNL's polling for every account counts against its own small set of egress addresses at this ceiling, which is the practical reason to populate it before the tier carries more than a handful of accounts. Sign-up throttling now exists too, and it makes the opposite choice on failure: `ENROL_LIMITER` bounds one identity to ten enrolment attempts a minute per Cloudflare location, keyed by their owner tag, and **fails closed**. That is deliberate and is not an inconsistency with the sentence above: there a limiter fault costs only our own database work, whereas this limiter is the only bound on how often we can make Bambu email an arbitrary address, so a fault must stop us rather than free us. New enrolment pauses; every display already configured keeps working, because it polls a different route with a different limiter. It is consulted before any Bambu call on all three routes that make one — the two sign-in steps and the printer picker — so it bounds the outbound request and not merely our own status code, and the binding is required by the type rather than optional, so dropping it from configuration cannot silently remove the bound. Verified end to end: the eleventh attempt in a minute answered `429` and never reached Bambu. |
-| Never log a token, email, device id, or webhook URL | **Met by the modules currently here.** All logging goes through `src/log.ts`, whose detail type admits only strings, numbers, booleans and null, so an account object or a response body cannot be handed to it. `src/worker.ts` builds every line through the single exported `cycleLogDetail`, which emits exactly four fields: a hashed account tag, a fixed outcome token, a coarse cloud status and a byte count. `test/worker.test.ts` asserts against that exact function rather than a copy of it, so adding a fifth field fails the suite. The screen endpoint logs nothing at all, and the key travels in an `Authorization` header rather than a query string so that Cloudflare's own request logging could not record it even if it were on — and it is off, via `observability.logs.invocation_logs`, which has to sit under `logs` because Wrangler silently discards it one level higher. `src/crypto.ts` and both stores contain no logging path, row-drift reasons name a column and never an account id, and every catch in the Worker logs a fixed message rather than an error's text. The sign-in flow has now landed and was re-audited with it: `src/session.ts`, `src/routes.ts` and `src/enrol.ts` contain no logging call at all, which is how the email address and the identity subject that now enter the system stay out of the log. Session verification returns only an opaque subject, dropping the token's `email` and `name` claims, so a later caller cannot log what it never received, and `CloudError` carries a status and a category but never a Bambu response body. |
-| Identity from a hosted provider; no stored passwords | **Code complete and verified against the real provider; onboarding UI still missing.** Enrolment is behind a verified Neon Auth session: `src/session.ts` checks a short-lived Ed25519 token against the provider's published key set, pinning the algorithm rather than reading it from the token, deriving both the expected issuer and audience from `NEON_AUTH_BASE_URL`, and returning only an opaque subject so the `email` and `name` claims cannot reach a log. No password is stored, asked for, or accepted anywhere: the hosted Bambu sign-in uses an emailed code, so a Bambu password never transits this service either (see `docs/DECISIONS.md` D14). With `NEON_AUTH_BASE_URL` empty the whole enrolment surface answers 404 rather than trusting its caller. Forgeries were refused in the real runtime — `alg: none`, an HMAC signature, a genuine signature under a substituted key id, a tampered payload, a foreign issuer, an expired token and an unknown key id. There is now a setup page at `/`, served as a static asset by this same Worker, which drives the whole flow in a browser: sign in, connect Bambu with an emailed code, choose printers, receive one key, then change printers, rotate the key or delete everything. `run_worker_first` in `wrangler.jsonc` is what stops the asset server shadowing `/v1/*`; without it TRMNL would poll HTML instead of a render. Neon Auth is provisioned on the owner's project and the Worker was driven against it: a token minted by the real provider was accepted and resolved to its subject, while a junk signature, an empty signature, a 63-byte signature and a swapped payload were each refused with 401. That run is also what exposed the throwing-`verify` defect described in `docs/DECISIONS.md` D17. Sign-up requires email verification, which matters here because an unverified identity would let one person mint unlimited identities and so defeat the per-identity enrolment limiter. What remains is a browser page: the API is reachable only by a client that can already present a token. |
+| Written, current threat model | **Partly met.** [`SECURITY.md`](../SECURITY.md) documents token, telemetry and collector exposure. The marketplace conversion replaced the identity system, so the threat model must be revisited for it — the screen-key entries are obsolete, and the TRMNL installation token takes their place. It remains *partly* met because it has had no external review. |
+| User revocation and deletion that actually deletes | **Met.** Uninstalling the plugin in TRMNL fires `POST /trmnl/uninstall`, which deletes the account, its rendered screen (`ON DELETE CASCADE`) and the installation row, verified against real Postgres with raw row counts. `DELETE /v1/account` does the same for the account alone, behind a verified management token, and the installation can enrol again because nothing tombstones the owner tag. |
+| Per-account rate limits and abuse controls | **Met for the surface that exists.** `SCREEN_ADDRESS_LIMITER` is keyed by client address and consulted before any `/trmnl/` route can reach the database, so anonymous probing is bounded before it is paid for. `ENROL_LIMITER` bounds what one installation can make Bambu do, keyed by owner tag, consulted before Bambu is asked to send mail. |
+| Never log a token, email, device id, or webhook URL | **Met by the modules currently here.** All logging goes through `src/log.ts`, whose detail type admits only strings, numbers, booleans and null. `src/worker.ts` builds every line through the single exported `cycleLogDetail`, which emits exactly four fields, and `test/worker.test.ts` asserts against that exact function. The TRMNL and enrolment surfaces log nothing at all, and every credential travels in an `Authorization` header or a URL fragment — never a query string — so platform request logging cannot record one. |
+| Identity from a hosted provider; no stored passwords | **Met, by TRMNL.** Identity is the TRMNL installation itself: a per-installation access token minted by TRMNL during the install handshake, stored here only as a keyed HMAC tag, verified on every request. There is no account database of ours, no password is stored, asked for, or accepted anywhere, and the hosted Bambu sign-in uses an emailed code, so a Bambu password never transits this service either (see `docs/DECISIONS.md` D14). |
 
-The Worker, database, secrets, schedules, and identity provider are not provisioned by this repository. The owner performs resource creation and deployment only after the unmet launch gates are closed and the hosted stack has received a security review.
+The Worker, database, secrets and schedules are not provisioned by this repository. The owner performs resource creation and deployment only after the unmet launch gates are closed and the hosted stack has received a security review.

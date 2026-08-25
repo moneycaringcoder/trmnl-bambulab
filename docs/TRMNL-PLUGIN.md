@@ -237,7 +237,11 @@ trmnlp build --png
 
 Review third-party `transform.*` files before running cloned plugins: current `trmnlp` executes serverless transforms during preview by default.[7]
 
-Do not run `trmnlp push` until a human has supplied and approved the target TRMNL plugin ID and credentials. Ensure `src/settings.yml` has the intended `id`; the tool warns that pushing without it can create a new plugin instead of updating one.[7]
+Do not run `trmnlp push` casually from a public clone. This repository
+intentionally omits `id` from `src/settings.yml`, so the official tool creates a
+new plugin on every push rather than updating an existing plugin.[7] Use
+`trmnlp clone` or `trmnlp pull` when working on your own existing plugin, and
+never stage the `id` that sync writes locally.
 
 ## Distribution
 
@@ -267,6 +271,16 @@ declares becomes the live plugin's configuration. While it declared
 have reconfigured the one plugin that does exist — the self-hosted webhook one —
 and pointed it at a placeholder host. One live settings file, one strategy, and
 the other tier's settings kept as documentation:
+
+For open-source safety, the synced file deliberately keeps the self-hosted
+`strategy: webhook` but omits the plugin `id`. The official `trmnlp` project
+documents `src/settings.yml` as the configuration uploaded and downloaded by
+`push` and `pull`; it has no local-only override for the plugin id.
+`.trmnlp.yml` is already ignored here, but it configures only the local preview
+server and cannot carry an upload target. Omitting `id` is therefore the
+conservative mechanism: a clone cannot target the owner's plugin, a push with
+no id creates a new plugin, and the owner's repository sync re-adds their id
+only in their local copy. Contributors must never commit an `id:` line.
 
 ```yaml
 strategy: polling

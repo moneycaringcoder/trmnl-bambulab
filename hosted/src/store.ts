@@ -27,30 +27,20 @@ export type Region = "global" | "china";
  *
  * `id` is ours and is bound into the token's encryption as additional data, so
  * it must never be reused after a deletion and must never be derivable from
- * anything the user hands out. `screenKeyFingerprint` is what the user *does*
- * hand out, hashed: see `Store.pollByScreenKey`.
+ * anything the user hands out.
  */
 export interface Account {
   id: string;
   region: Region;
   token: SealedToken;
   /**
-   * SHA-256 of the screen key, hex. The key itself is shown to the user once,
-   * at enrolment, and never stored: a database leak then yields no working
-   * keys, only fingerprints that cannot be reversed into one.
-   */
-  screenKeyFingerprint: string;
-  /**
-   * A keyed tag of the identity-provider subject that owns this account.
+   * A keyed tag of the TRMNL installation that owns this account.
    *
-   * Never the subject itself. See `ownerTag` in `crypto.ts` for why it is an
-   * HMAC rather than a hash: the provider does not document the entropy of the
-   * value it puts in `sub`, so a plain digest of it could be reversible.
-   *
-   * Unique across accounts, so one signed-in person has one account. That is a
-   * product decision as much as a constraint: this plugin shows up to three
-   * printers on one screen, so a second account for the same person would be a
-   * second display, not a feature anyone asked for.
+   * Never the installation id itself. See `ownerTag` in `crypto.ts` for why it
+   * is an HMAC rather than a hash. Unique across accounts, so one installation
+   * has one account: this plugin shows up to three printers on one screen, and
+   * a second account for the same installation would be a second display,
+   * not a feature anyone asked for.
    */
   ownerTag: string;
   /**
@@ -75,31 +65,42 @@ export interface Account {
 }
 
 /**
- * The rendered payload, as the screen endpoint will serve it.
+ * The rendered payload, as the markup route will serve it.
  *
- * This exists because the cron writes and the endpoint reads, which is the
- * central decision in the polling design. TRMNL fetches on a schedule the
- * *user* chooses, so an endpoint that read Bambu on demand would let one user's
- * refresh setting decide how hard we hit Bambu, would put two cloud round-trips
- * inside TRMNL's request timeout, and would let anyone holding a key generate
- * load on Bambu at will. Serving a stored render makes Bambu's load a function
- * of our cron alone.
+ * This exists because the cron and collector write and the markup route reads,
+ * which is the central decision in the design. TRMNL asks for markup on a
+ * schedule the *user* chooses, so a route that read Bambu on demand would let
+ * one user's refresh setting decide how hard we hit Bambu, would put two cloud
+ * round-trips inside TRMNL's request timeout, and would let anyone holding a
+ * token generate load on Bambu at will. Serving a stored render makes Bambu's
+ * load a function of our own schedule alone.
  */
 export interface Screen {
-  /** The exact JSON body to return, merge variables at the root. */
+  /** The exact JSON body of merge variables, at the root. */
   body: string;
   /** Bridge clock when it was rendered, epoch milliseconds. */
   renderedAt: number;
 }
 
 /**
- * The account and stored render resolved for one screen poll.
+ * One TRMNL plugin installation, which is the identity a hosted user has.
  *
- * `screen` is null before the cron has produced its first render.
+ * TRMNL mints an access token per installation during the install handshake and
+ * presents it as a Bearer token on every markup request, so identity is theirs
+ * to run and ours only to verify. What we keep is a keyed tag of that token,
+ * never the token itself.
  */
-export interface PollResult {
-  account: Account;
-  screen: Screen | null;
+export interface Installation {
+  /** Ours, random, unguessable. The subject `ownerTag` is derived from. */
+  id: string;
+  /** Keyed HMAC of the TRMNL access token. Never the token. */
+  accessTokenTag: string;
+  /** TRMNL's id for this user-plugin connection. Null until the success webhook. */
+  userUuid: string | null;
+  /** For deep-linking back to trmnl.com's own settings page. */
+  pluginSettingId: number | null;
+  /** Null until the owner signs in to Bambu and picks printers. */
+  accountId: string | null;
 }
 
 export interface Store {
@@ -128,15 +129,38 @@ export interface Store {
   accountById(id: string): Promise<Account | null>;
 
   /**
-   * Resolves an account and its stored render by the hash of a presented screen key.
+   * Finds the installation whose access token carries this keyed tag.
    *
-   * Takes a fingerprint rather than a key so that no implementation is ever
-   * handed the live credential, and so the lookup is a single indexed equality
-   * test rather than a scan. Returns null for an unknown fingerprint. This must
-   * not filter on `reauth_required`: a refused token should still serve its last
-   * render.
+   * Takes a tag rather than the token so no implementation is ever handed the
+   * live credential, and so the lookup is one indexed equality test. Takes
+   * every candidate tag, because a tag cannot be recomputed after a key
+   * rotation without the token, which is deliberately not kept.
    */
-  pollByScreenKey(fingerprint: string): Promise<PollResult | null>;
+  installationByTokenTag(candidateTags: readonly string[]): Promise<Installation | null>;
+
+  installationById(id: string): Promise<Installation | null>;
+
+  /** Creates an installation from the install handshake. */
+  createInstallation(installation: Installation): Promise<void>;
+
+  /** Records what the success webhook said about who installed. */
+  recordInstallationUser(
+    id: string,
+    userUuid: string,
+    pluginSettingId: number | null,
+  ): Promise<void>;
+
+  /** Binds the Bambu account this installation configured. */
+  linkInstallationAccount(id: string, accountId: string): Promise<void>;
+
+  /**
+   * Removes the installation row itself.
+   *
+   * The uninstall flow deletes the linked account first — `deleteAccount` is
+   * where the actual-deletion obligation lives — and then this removes the
+   * token tag, so nothing TRMNL could still present resolves to anything.
+   */
+  deleteInstallation(id: string): Promise<void>;
 
   /**
    * Finds the account belonging to a signed-in person.
@@ -162,9 +186,6 @@ export interface Store {
 
   /** Replaces a token in place, for a re-authentication. Clears the flag. */
   replaceToken(accountId: string, token: SealedToken): Promise<void>;
-
-  /** Replaces the screen key, which is how a leaked key is retired. */
-  replaceScreenKey(accountId: string, fingerprint: string): Promise<void>;
 
   /** Records that the cloud refused this token, so the cron stops trying. */
   markReauthRequired(accountId: string): Promise<void>;

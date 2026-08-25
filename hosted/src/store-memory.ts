@@ -13,7 +13,7 @@
  */
 
 import type { SealedToken } from "./crypto.ts";
-import type { Account, PollResult, Screen, Store } from "./store.ts";
+import type { Account, Installation, Screen, Store } from "./store.ts";
 
 interface AccountEntry {
   account: Account;
@@ -31,7 +31,6 @@ function copyAccount(account: Account): Account {
     ownerTag: account.ownerTag,
     region: account.region,
     token: copyToken(account.token),
-    screenKeyFingerprint: account.screenKeyFingerprint,
     deviceIds: [...account.deviceIds],
     maxPayloadBytes: account.maxPayloadBytes,
     exportJobName: account.exportJobName,
@@ -41,7 +40,8 @@ function copyAccount(account: Account): Account {
 
 export class MemoryStore implements Store {
   private readonly accounts = new Map<string, AccountEntry>();
-  private readonly accountIdsByScreenKey = new Map<string, string>();
+  private readonly installations = new Map<string, Installation>();
+  private readonly installationIdsByTokenTag = new Map<string, string>();
   private readonly accountIdsByOwnerTag = new Map<string, string>();
   private readonly screens = new Map<string, Screen>();
   private createdOrder = 0;
@@ -102,20 +102,58 @@ export class MemoryStore implements Store {
     return null;
   }
 
-  async pollByScreenKey(fingerprint: string): Promise<PollResult | null> {
-    const accountId = this.accountIdsByScreenKey.get(fingerprint);
-    if (accountId === undefined) return null;
-    const account = await this.accountById(accountId);
-    if (account === null) return null;
-    return { account, screen: await this.readScreen(accountId) };
+  async installationByTokenTag(candidateTags: readonly string[]): Promise<Installation | null> {
+    for (const candidateTag of candidateTags) {
+      const id = this.installationIdsByTokenTag.get(candidateTag);
+      if (id === undefined) continue;
+      const installation = this.installations.get(id);
+      if (installation !== undefined) return { ...installation };
+    }
+    return null;
+  }
+
+  async installationById(id: string): Promise<Installation | null> {
+    const installation = this.installations.get(id);
+    return installation === undefined ? null : { ...installation };
+  }
+
+  async createInstallation(installation: Installation): Promise<void> {
+    if (this.installations.has(installation.id)) {
+      throw new Error("that installation already exists");
+    }
+    if (this.installationIdsByTokenTag.has(installation.accessTokenTag)) {
+      throw new Error("that access token tag already exists");
+    }
+    this.installations.set(installation.id, { ...installation });
+    this.installationIdsByTokenTag.set(installation.accessTokenTag, installation.id);
+  }
+
+  async recordInstallationUser(
+    id: string,
+    userUuid: string,
+    pluginSettingId: number | null,
+  ): Promise<void> {
+    const installation = this.installations.get(id);
+    if (installation === undefined) return;
+    installation.userUuid = userUuid;
+    installation.pluginSettingId = pluginSettingId;
+  }
+
+  async linkInstallationAccount(id: string, accountId: string): Promise<void> {
+    const installation = this.installations.get(id);
+    if (installation !== undefined) installation.accountId = accountId;
+  }
+
+  async deleteInstallation(id: string): Promise<void> {
+    const installation = this.installations.get(id);
+    if (installation === undefined) return;
+    this.installationIdsByTokenTag.delete(installation.accessTokenTag);
+    this.installations.delete(id);
   }
 
   async createAccount(account: Omit<Account, "reauthRequired">): Promise<Account> {
     if (this.accounts.has(account.id)) {
       throw new Error("that account already exists");
-    }
-    if (this.accountIdsByScreenKey.has(account.screenKeyFingerprint)) {
-      throw new Error("that screen key fingerprint already exists");
     }
     if (this.accountIdsByOwnerTag.has(account.ownerTag)) {
       throw new Error("that owner tag already exists");
@@ -126,7 +164,6 @@ export class MemoryStore implements Store {
       ownerTag: account.ownerTag,
       region: account.region,
       token: copyToken(account.token),
-      screenKeyFingerprint: account.screenKeyFingerprint,
       deviceIds: [...account.deviceIds],
       maxPayloadBytes: account.maxPayloadBytes,
       exportJobName: account.exportJobName,
@@ -138,7 +175,6 @@ export class MemoryStore implements Store {
       createdOrder: this.createdOrder,
       lastServicedOrder: null,
     });
-    this.accountIdsByScreenKey.set(created.screenKeyFingerprint, created.id);
     this.accountIdsByOwnerTag.set(created.ownerTag, created.id);
 
     // Like Neon, there is no screens row until the cron has rendered something.
@@ -155,20 +191,6 @@ export class MemoryStore implements Store {
   async replacePrinters(accountId: string, deviceIds: readonly string[]): Promise<void> {
     const entry = this.accounts.get(accountId);
     if (entry !== undefined) entry.account.deviceIds = [...deviceIds];
-  }
-
-  async replaceScreenKey(accountId: string, fingerprint: string): Promise<void> {
-    const entry = this.accounts.get(accountId);
-    if (entry === undefined) return;
-
-    const owner = this.accountIdsByScreenKey.get(fingerprint);
-    if (owner !== undefined && owner !== accountId) {
-      throw new Error("that screen key fingerprint already exists");
-    }
-
-    this.accountIdsByScreenKey.delete(entry.account.screenKeyFingerprint);
-    entry.account.screenKeyFingerprint = fingerprint;
-    this.accountIdsByScreenKey.set(fingerprint, accountId);
   }
 
   async markReauthRequired(accountId: string): Promise<void> {
@@ -199,10 +221,14 @@ export class MemoryStore implements Store {
     if (entry === undefined) return;
 
     // Keep the cascade structural here too: there is no tombstone and no path
-    // which removes the account while retaining its payload or fingerprint.
-    this.accountIdsByScreenKey.delete(entry.account.screenKeyFingerprint);
+    // which removes the account while retaining its payload or token.
     this.accountIdsByOwnerTag.delete(entry.account.ownerTag);
     this.accounts.delete(accountId);
     this.screens.delete(accountId);
+    // Mirrors the schema's ON DELETE SET NULL: the installation outlives a
+    // deleted account and can enrol a fresh one.
+    for (const installation of this.installations.values()) {
+      if (installation.accountId === accountId) installation.accountId = null;
+    }
   }
 }

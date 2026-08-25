@@ -116,11 +116,12 @@ an account. What is left, in order:
    service (D14). Nothing is kept between the two login steps (D15). What is
    missing is the HTML: a person cannot use this from a browser until there is a
    page, only from a client that can present a token.
-3. ~~**Identity.**~~ **Code done; the provider is not provisioned.** Sessions are
-   verified locally against the provider's published key set, with the algorithm
-   pinned and only the subject kept (D17). The subject is stored as a keyed tag,
-   never raw (D16). Provisioning Neon Auth in the owner's project is theirs to
-   do, and until `NEON_AUTH_BASE_URL` is set the whole surface answers 404.
+3. ~~**Identity.**~~ **Done and proven against the real provider.** Neon Auth is
+   provisioned on the owner's project, with Google and email sign-in and email
+   verification required on sign-up. A token from the real provider was accepted
+   by the Worker and resolved to its subject; junk, empty, 63-byte and swapped
+   signatures were each refused with 401. The algorithm is pinned and only the
+   subject is kept (D17); the subject is stored as a keyed tag, never raw (D16).
 4. ~~**Revoke and delete, in the interface.**~~ **Done.** `DELETE /v1/account`
    and `POST /v1/enrol/key`, both behind a session. Proven against a real
    Postgres: the row and its screen go, the retired key stops resolving, another
@@ -140,8 +141,12 @@ an account. What is left, in order:
    field. Publishing an Unlisted Recipe is an action in TRMNL's interface, so
    it is the owner's to take.
 
-What remains is a browser page for step 2, and the two things only the owner can
-do: provision Neon Auth, and publish the recipe. Nothing else is blocking.
+What remains is a browser page for step 2, and publishing the recipe, which is a
+button in TRMNL's interface and therefore the owner's. Identity is no longer a
+blocker: it is provisioned and verified. Deploying the Worker is still the
+owner's call, and a trusted origin has to be registered with the provider once
+that deployment has a domain — `localhost` is allowed today so the page can be
+built and driven before anything is deployed.
 
 ## Known unknowns
 

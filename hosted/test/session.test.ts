@@ -248,6 +248,67 @@ describe("forgeries", () => {
     expect(expectRejected(await verifier.identify(`Bearer ${swapped}`, NOW))).toBe("bad-signature");
   });
 
+
+  it("refuses a signature of the wrong length", async () => {
+    const jwks = jwksServer([signer.jwk]);
+    const verifier = new SessionVerifier({ baseUrl: BASE, fetchImpl: jwks.fetchImpl });
+    const token = await signer.sign({ alg: "EdDSA", kid: signer.kid }, claims());
+    const [header, payload] = token.split(".");
+
+    for (const forged of ["AAAA", "", "A".repeat(200), base64Url(new Uint8Array(63))]) {
+      const outcome = await verifier.identify(`Bearer ${header}.${payload}.${forged}`, NOW);
+      // Either reason is correct: a segment that is not base64url at all is
+      // malformed, and one that decodes to the wrong number of bytes is a bad
+      // signature. What matters is that both are refusals.
+      expect(["bad-signature", "malformed"]).toContain(expectRejected(outcome));
+    }
+  });
+
+  // The regression this actually guards, and it has to be written this way.
+  //
+  // The bug was found by pointing the Worker at the real provider: Ed25519
+  // wants exactly 64 bytes, and *workerd* throws on any other length while Node
+  // returns false. Vitest runs under Node here, so the test above passes with
+  // the fix reverted — it pins the refusal contract, not the regression. Forcing
+  // the throw is the only way to exercise the catch in this runner, and it is
+  // worth doing precisely because the runtime that throws is the one we ship to.
+  it("refuses rather than propagating when verify throws", async () => {
+    const jwks = jwksServer([signer.jwk]);
+    const verifier = new SessionVerifier({ baseUrl: BASE, fetchImpl: jwks.fetchImpl });
+    const token = await signer.sign({ alg: "EdDSA", kid: signer.kid }, claims());
+
+    const real = crypto.subtle.verify;
+    crypto.subtle.verify = () => {
+      throw new Error("OperationError");
+    };
+    try {
+      const outcome = await verifier.identify(`Bearer ${token}`, NOW);
+      // Unwrapped, this throw escaped to the route's outer catch and became a
+      // 503: our fault rather than the caller's, and a signal that a signature
+      // was malformed rather than merely wrong.
+      expect(expectRejected(outcome)).toBe("bad-signature");
+    } finally {
+      crypto.subtle.verify = real;
+    }
+  });
+
+  it("does not treat a thrown verify as a success", async () => {
+    const jwks = jwksServer([signer.jwk]);
+    const verifier = new SessionVerifier({ baseUrl: BASE, fetchImpl: jwks.fetchImpl });
+    const token = await signer.sign({ alg: "EdDSA", kid: signer.kid }, claims());
+
+    const real = crypto.subtle.verify;
+    crypto.subtle.verify = () => Promise.reject(new Error("OperationError"));
+    try {
+      // A rejected promise, not a synchronous throw: the other shape the same
+      // runtime can produce.
+      const outcome = await verifier.identify(`Bearer ${token}`, NOW);
+      expect(outcome.kind).not.toBe("identified");
+    } finally {
+      crypto.subtle.verify = real;
+    }
+  });
+
   it("refuses tokens from another issuer signing with a key we trust", async () => {
     const jwks = jwksServer([signer.jwk]);
     const verifier = new SessionVerifier({ baseUrl: BASE, fetchImpl: jwks.fetchImpl });
@@ -492,6 +553,30 @@ describe("key handling", () => {
 });
 
 describe("configuration", () => {
+
+  // The Worker builds the verifier before the try that catches configuration
+  // failures, so a throw here escaped as a platform 500 rather than the
+  // deliberate 503 every other misconfiguration produces.
+  it("treats an unusable base URL as unconfigured rather than throwing", async () => {
+    const jwks = jwksServer([signer.jwk]);
+    const token = await signer.sign({ alg: "EdDSA", kid: signer.kid }, claims());
+
+    for (const baseUrl of [
+      "not a url",
+      "://missing-scheme",
+      "ep-host.example/db/auth",
+      // Parses, but is not something we may fetch a key set from.
+      "file:///etc/passwd",
+      "data:text/plain,hello",
+      "javascript:alert(1)",
+    ]) {
+      const verifier = new SessionVerifier({ baseUrl, fetchImpl: jwks.fetchImpl });
+      expect(verifier.configured).toBe(false);
+      expect((await verifier.identify(`Bearer ${token}`, NOW)).kind).toBe("unconfigured");
+    }
+    expect(jwks.calls).toEqual([]);
+  });
+
   it("refuses every request when identity is not provisioned", async () => {
     const jwks = jwksServer([signer.jwk]);
     const token = await signer.sign({ alg: "EdDSA", kid: signer.kid }, claims());

@@ -462,11 +462,35 @@ Four choices inside that, each with a cheap wrong version:
   `NEON_AUTH_BASE_URL`, every enrolment route answers 404 rather than falling
   back to trusting its caller, so a half-provisioned deployment exposes nothing.
 
-**One bug worth recording, because only the real runtime found it.** The verifier
+**Three bugs worth recording, because only the real runtime found them.** The verifier
 stored the global `fetch` on a field and called it as `this.fetchImpl(...)`,
 which invokes it with the wrong receiver. Node tolerates that; the Workers
 runtime rejects it. The throw landed in the `catch` that exists to survive a
 provider outage, so the key set stayed silently empty and *every* session was
 refused as `unknown-key` — with a full unit suite passing. The fix is a wrapper
-rather than an assignment. The lesson is the one the charter already states:
-a unit test that never touches the runtime is not evidence about the runtime.
+rather than an assignment.
+
+The second was the same shape. `crypto.subtle.verify` does not merely return
+false for a signature of the wrong length: Ed25519 wants sixty-four bytes and
+workerd throws on anything else, while Node returns false. Unwrapped, that throw
+escaped to the route's outer catch, so a caller sending junk in the signature
+segment received `503` — our fault rather than theirs, and a distinguisher
+between a malformed signature and a merely wrong one. It is now caught and
+treated as a bad signature.
+
+The third was found while fixing the second. `new URL` on the configured base
+URL was unguarded, and the Worker builds the verifier *before* the try that
+catches configuration failures, so a typo in that setting escaped as an
+unhandled exception and a platform `500` rather than the deliberate `503` every
+other misconfiguration produces. An unusable base URL is now treated exactly as
+an absent one, so the surface answers `404` and exposes nothing; only `http` and
+`https` are accepted, because `file:` and `data:` would otherwise parse and then
+be fetched.
+
+The lesson is the one the charter already states: a unit test that never touches
+the runtime is not evidence about the runtime. Worth being concrete about the
+consequence for tests, too. The obvious regression test for the second bug —
+present a short signature — passes with the fix reverted, because Vitest runs
+under Node and Node does not throw. An audit caught that. The test that actually
+guards it forces the throw by replacing `crypto.subtle.verify`, and was checked
+by reverting the fix and confirming it fails.

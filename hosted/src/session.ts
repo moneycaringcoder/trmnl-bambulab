@@ -158,11 +158,19 @@ export class SessionVerifier {
 
   constructor(config: { baseUrl: string | undefined; fetchImpl?: typeof fetch }) {
     const base = config.baseUrl?.trim() ?? "";
-    if (base === "") {
+    // A base URL that will not parse is treated exactly as an absent one, which
+    // makes this constructor total. It matters because the Worker builds the
+    // verifier *before* the try that catches configuration failures, so a throw
+    // here escaped as an unhandled exception and a platform 500 — worse than the
+    // deliberate 503 every other misconfiguration produces, and unhelpfully
+    // different from it. Unconfigured means the enrolment surface answers 404
+    // and exposes nothing, which is the right outcome for a typo in a setting
+    // that authentication depends on.
+    const url = parseBase(base);
+    if (url === null) {
       this.origin = null;
       this.jwksUrl = null;
     } else {
-      const url = new URL(base);
       // Both `iss` and `aud` are the origin rather than the full base path, so
       // they are derived here once and never configured separately.
       this.origin = url.origin;
@@ -222,8 +230,20 @@ export class SessionVerifier {
 
     // Signature before claims, always. Reading claims out of an unverified
     // token and acting on them is how a verifier becomes decorative.
+    //
+    // Wrapped, because `verify` does not merely return false for a signature of
+    // the wrong length: Ed25519 expects 64 bytes and the runtime throws on
+    // anything else. Unwrapped, that throw escaped to the route's outer catch
+    // and a caller sending junk in the signature segment got a 503 — the wrong
+    // status, our fault rather than theirs, and a distinguisher between a
+    // malformed signature and a merely wrong one.
     const signed = new TextEncoder().encode(`${encodedHeader}.${encodedPayload}`);
-    const valid = await crypto.subtle.verify(ALGORITHM, key.key, signature, signed);
+    let valid = false;
+    try {
+      valid = await crypto.subtle.verify(ALGORITHM, key.key, signature, signed);
+    } catch {
+      return reject("bad-signature");
+    }
     if (!valid) return reject("bad-signature");
 
     const payload = decodeJson(encodedPayload);
@@ -330,6 +350,25 @@ export class SessionVerifier {
 
 function reject(reason: RejectionReason): SessionOutcome {
   return { kind: "rejected", reason };
+}
+
+
+/**
+ * Parses a configured base URL, or null when it is absent or unusable.
+ *
+ * Only `http` and `https` are accepted. Without that check a setting such as
+ * `file:///etc/passwd` or `data:...` would parse, and the verifier would then
+ * try to fetch a key set from it.
+ */
+function parseBase(base: string): URL | null {
+  if (base === "") return null;
+  let url: URL;
+  try {
+    url = new URL(base);
+  } catch {
+    return null;
+  }
+  return url.protocol === "https:" || url.protocol === "http:" ? url : null;
 }
 
 async function importJwks(document: unknown): Promise<Map<string, OkpKey>> {

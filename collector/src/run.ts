@@ -14,6 +14,8 @@ import { hostsFor } from "../../bridge/src/providers/bambu-cloud/hosts.ts";
 import { mqttUsernameForUid } from "../../bridge/src/providers/bambu-cloud/token.ts";
 import { CloudError } from "../../bridge/src/providers/bambu-cloud/http.ts";
 import type { ByteStream } from "../../bridge/src/mqtt/client.ts";
+import type { Observation } from "../../bridge/src/types.ts";
+import type { PollOptions, PollResult } from "../../bridge/src/providers/cloud-http.ts";
 import { openToken, type Keyring } from "../../hosted/src/crypto.ts";
 import { accountTag, type LogDetail } from "../../hosted/src/log.ts";
 import type { Account, Store } from "../../hosted/src/store.ts";
@@ -27,6 +29,14 @@ export interface CollectorPorts {
   store: Store;
   keyring: Keyring;
   connect(target: { host: string; port: number }): Promise<ByteStream>;
+  /**
+   * The HTTP read that supplies the names MQTT does not carry.
+   *
+   * Injected rather than imported so a test can drive the whole account loop
+   * without a network, and so the collector and the cron are visibly doing the
+   * same read.
+   */
+  pollCloud(options: PollOptions): Promise<PollResult>;
   now(): number;
   sleep(ms: number): Promise<void>;
   /** True once the process should wind down. */
@@ -102,6 +112,34 @@ export async function collectAccount(
       continue;
     }
 
+    // HTTP first, every session, because MQTT does not carry a printer's name.
+    // This is the same read the cron does, and it is what makes the collector's
+    // richer render a superset of the cron's rather than a trade: names and
+    // online flags from here, metrics from the reports that follow.
+    let baseline: readonly Observation[] = [];
+    try {
+      const poll = await ports.pollCloud({
+        hosts: hostsFor(account.region),
+        accessToken,
+        deviceIds: account.deviceIds,
+        exportJobName: account.exportJobName,
+        now: ports.now(),
+      });
+      if (poll.status === "reauth_required") {
+        await ports.store.markReauthRequired(account.id);
+        ports.log("warn", "the cloud refused this account's token", { account_tag: tag });
+        return;
+      }
+      baseline = poll.observations;
+    } catch {
+      // Without a baseline the render would have no name, so this is worth a
+      // retry rather than a nameless session.
+      failures += 1;
+      ports.log("warn", "could not read the printer list", { account_tag: tag });
+      if (await sleepOrStop(ports, backoffMs(failures, ports.random))) return;
+      continue;
+    }
+
     try {
       const ending = await runAccountSession(account, {
         store: ports.store,
@@ -111,6 +149,7 @@ export async function collectAccount(
         clientId: ports.clientId(),
         now: ports.now,
         stopped: ports.stopped,
+        baseline,
         onRender: ({ bytes, printers }) => {
           failures = 0;
           ports.log("info", "stored a live render", {

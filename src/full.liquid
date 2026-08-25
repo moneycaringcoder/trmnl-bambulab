@@ -16,10 +16,24 @@ becoming a zero, which is why an idle printer has no progress rail at all
 rather than an empty one.
 {% endcomment %}
 
+{% comment %}
+  Two headline sizes, not one. A percentage is three or four narrow glyphs; a
+  state word is eight wide ones, and at the same class it dwarfs the number
+  beside it — on real data "Printing" towered over "52%" on the printer above it.
+  A word therefore sits one step down, which keeps the number the loudest thing
+  on the screen. That is the right emphasis anyway: the number is the thing you
+  read from across a room.
+{% endcomment %}
 {% case printers.size %}
-  {% when 1 %}{% assign headline = "value--giga" %}
-  {% when 2 %}{% assign headline = "value--xlarge" %}
-  {% else %}{% assign headline = "value--large" %}
+  {% when 1 %}
+    {% assign headline = "value--giga" %}
+    {% assign headline_word = "value--xlarge" %}
+  {% when 2 %}
+    {% assign headline = "value--xlarge" %}
+    {% assign headline_word = "value--large" %}
+  {% else %}
+    {% assign headline = "value--large" %}
+    {% assign headline_word = "value--base" %}
 {% endcase %}
 
 <div class="layout layout--col layout--stretch">
@@ -55,13 +69,13 @@ rather than an empty one.
               rather than the printer's, and showing the last known figures at
               headline size would present them as current.
             {% endcomment %}
-            <span class="value {{ headline }}">&mdash;</span>
+            <span class="value {{ headline_word }}">&mdash;</span>
           {% elsif printer.state == "idle" %}
-            <span class="value {{ headline }}">Ready</span>
+            <span class="value {{ headline_word }}">Ready</span>
           {% elsif printer.progress %}
             <span class="value {{ headline }} value--tnums">{{ printer.progress }}%</span>
           {% else %}
-            <span class="value {{ headline }}">{{ printer.state | capitalize }}</span>
+            <span class="value {{ headline_word }}">{{ printer.state | capitalize }}</span>
           {% endif %}
 
           <span class="label">

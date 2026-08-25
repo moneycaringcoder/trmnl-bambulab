@@ -58,6 +58,17 @@ export interface SessionPorts {
    * writers on one screen row. Bambu bans accounts for the first.
    */
   stopped: Promise<void>;
+  /**
+   * What HTTP already knows, applied before the first report arrives.
+   *
+   * Required, because MQTT does not carry a printer's name. It carries metrics
+   * and a state token and nothing that says which machine this is, so a session
+   * built from reports alone renders a nameless card — and "an idle printer
+   * shows its name" is the product's one promise about the idle case. HTTP is
+   * the baseline and MQTT is the enrichment, in that order, exactly as the
+   * self-hosted bridge does it.
+   */
+  baseline: readonly Observation[];
   /** Called after each stored render, for logging that names no printer. */
   onRender?(detail: { bytes: number; printers: number }): void;
 }
@@ -79,7 +90,15 @@ export async function runAccountSession(
   // The coordinator persists across reports for the life of this session, which
   // is the whole reason a held connection is worth having: a P1 sends only the
   // fields that changed, so the accumulated view is richer than any one report.
+  //
+  // It starts from what HTTP said rather than from nothing, so a name and an
+  // online flag are present from the first render and survive every report that
+  // does not mention them. The coordinator's own provider precedence decides the
+  // rest: MQTT wins for the fields it carries, HTTP keeps the ones it does not.
   let coordinator = emptyCoordinatorState();
+  for (const observation of ports.baseline) {
+    coordinator = accept(coordinator, observation);
+  }
   let pending = false;
   let writing: Promise<void> | null = null;
   let lastRenderAt = 0;
@@ -147,6 +166,17 @@ export async function runAccountSession(
         if (pending) scheduleRender();
       });
   };
+
+  // Write what HTTP already knows, before waiting on a single report. An idle
+  // account may not produce an MQTT report for hours, and until one arrives this
+  // render is the only thing standing between the display and a stale screen the
+  // cron is no longer allowed to refresh.
+  if (ports.baseline.length > 0) {
+    await render().catch(() => {
+      // The session is still worth having if this one write failed; the next
+      // report will try again.
+    });
+  }
 
   const { end, stop } = watchCloudMqtt(stream, {
     username: ports.username,

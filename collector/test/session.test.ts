@@ -15,6 +15,7 @@
 import { describe, expect, it } from "vitest";
 import { RENDER_COALESCE_MS, runAccountSession } from "../src/session.ts";
 import type { ByteStream } from "../../bridge/src/mqtt/client.ts";
+import type { Observation } from "../../bridge/src/types.ts";
 import type { Account, Screen, Store } from "../../hosted/src/store.ts";
 
 const CONNACK_OK = Buffer.from([0x20, 0x02, 0x00, 0x00]);
@@ -166,6 +167,7 @@ function run(
     clientId: "collector-test",
     now: () => clock.now,
     stopped: options.stopped ?? shutdown.promise,
+    baseline: [],
   });
 
   return { writes, written: broker.written, finished, halt: shutdown.resolve };
@@ -247,6 +249,7 @@ describe("a live session", () => {
       clientId: "collector-test",
       now: () => 1_000_000,
       stopped: NEVER_STOPS,
+      baseline: [],
     });
 
     expect(duringBurst).toBe(1);
@@ -274,6 +277,7 @@ describe("a live session", () => {
       clientId: "collector-test",
       now: () => clock.now,
       stopped: NEVER_STOPS,
+      baseline: [],
     });
 
     expect(writes.length).toBe(2);
@@ -302,6 +306,7 @@ describe("a live session", () => {
       clientId: "collector-test",
       now: () => clock.now,
       stopped: NEVER_STOPS,
+      baseline: [],
     });
 
     const latest = JSON.parse(writes.at(-1)?.body ?? "{}").printers?.[0];
@@ -372,6 +377,7 @@ describe("a live session", () => {
       clientId: "collector-test",
       now: () => clock.now,
       stopped: NEVER_STOPS,
+      baseline: [],
     });
 
     // Both reports were attempted, so one bad write did not tear down a healthy
@@ -485,6 +491,7 @@ describe("stopping a live session", () => {
       clientId: "collector-test",
       now,
       stopped: shutdown.promise,
+      baseline: [],
     });
     return { writes, broker, finished, halt: shutdown.resolve };
   }
@@ -534,6 +541,7 @@ describe("stopping a live session", () => {
       clientId: "collector-test",
       now: () => (at += RENDER_COALESCE_MS + 1),
       stopped: shutdown.promise,
+      baseline: [],
     });
 
     broker.push(report(DEVICE, PRINTING));
@@ -620,5 +628,111 @@ describe("stopping a live session", () => {
     for (const write of session.writes) {
       expect(JSON.parse(write.body).printers?.[0]?.progress).not.toBe(99);
     }
+  });
+});
+
+/**
+ * The HTTP baseline, which is what stops a richer render being a worse one.
+ *
+ * MQTT carries metrics and a state token. It does not carry a printer's name, so
+ * a session built from reports alone renders a nameless card — and this ran
+ * against a real account before it was caught: two printers, full telemetry, and
+ * no name on either.
+ */
+describe("the HTTP baseline", () => {
+  /** What `pollCloudHttp` produces for one printer: identity, not metrics. */
+  function httpObservation(deviceId: string, name: string): Observation {
+    return {
+      providerId: "cloud-http",
+      printerKey: deviceId,
+      receivedAt: 1_000_000,
+      observedAt: null,
+      fields: { printer: { name, online: true }, job: { state: "idle", rawState: "IDLE" } },
+      capabilities: {
+        realtimeTelemetry: false,
+        temperatures: false,
+        filament: false,
+        alerts: false,
+        deviceDiscovery: true,
+        projectMetadata: false,
+        coverImage: false,
+      },
+    };
+  }
+
+  function runWithBaseline(
+    steps: Step[],
+    baseline: readonly Observation[],
+    deviceIds: readonly string[] = [DEVICE],
+  ) {
+    const writes: Screen[] = [];
+    const broker = new ScriptedBroker([CONNACK_OK, SUBACK_OK, ...steps]);
+    let at = 1_000_000;
+    const finished = runAccountSession(account({ deviceIds: [...deviceIds] }), {
+      store: recordingStore(writes),
+      connect: async () => broker,
+      username: "u_1234567",
+      accessToken: "cloud-token",
+      clientId: "collector-test",
+      now: () => (at += RENDER_COALESCE_MS + 1),
+      stopped: NEVER_STOPS,
+      baseline,
+    });
+    return { writes, finished };
+  }
+
+  it("writes a named screen before any report arrives", async () => {
+    const session = runWithBaseline([], [httpObservation(DEVICE, "Workshop")]);
+    await session.finished;
+
+    // An idle account may not report for hours. Until then this is the only
+    // thing standing between the display and a screen the cron may no longer
+    // refresh, because the collector's own writes keep looking fresh.
+    expect(session.writes.length).toBe(1);
+    const printer = JSON.parse(session.writes[0]?.body ?? "{}").printers?.[0];
+    expect(printer?.name).toBe("Workshop");
+    expect(printer?.state).toBe("idle");
+  });
+
+  it("keeps the name once reports start arriving", async () => {
+    const session = runWithBaseline(
+      [report(DEVICE, PRINTING)],
+      [httpObservation(DEVICE, "Workshop")],
+    );
+    await session.finished;
+
+    // The regression this guards: MQTT enriched the card and erased its identity.
+    const latest = JSON.parse(session.writes.at(-1)?.body ?? "{}").printers?.[0];
+    expect(latest?.name).toBe("Workshop");
+    expect(latest?.progress).toBe(42);
+    expect(latest?.layer).toBe(81);
+  });
+
+  it("lets a report override the state the baseline gave", async () => {
+    const session = runWithBaseline(
+      [report(DEVICE, PRINTING)],
+      [httpObservation(DEVICE, "Workshop")],
+    );
+    await session.finished;
+
+    // HTTP said idle; MQTT is the fresher and more specific source, and the
+    // display must not claim idle while a percentage is climbing.
+    const latest = JSON.parse(session.writes.at(-1)?.body ?? "{}").printers?.[0];
+    expect(latest?.state).toBe("printing");
+  });
+
+  it("names every chosen printer, including one that never reports", async () => {
+    const session = runWithBaseline(
+      [report(DEVICE, PRINTING)],
+      [httpObservation(DEVICE, "Workshop"), httpObservation(OTHER_DEVICE, "Spare")],
+      [DEVICE, OTHER_DEVICE],
+    );
+    await session.finished;
+
+    // The real failure looked exactly like this: the quiet printer rendered as
+    // "Printer 2" with a state of unknown.
+    const printers = JSON.parse(session.writes.at(-1)?.body ?? "{}").printers ?? [];
+    expect(printers.map((p: { name?: string }) => p.name)).toContain("Spare");
+    for (const printer of printers) expect(printer.state).not.toBe("unknown");
   });
 });

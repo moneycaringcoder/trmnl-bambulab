@@ -13,6 +13,7 @@
 
 import { Client } from "@neondatabase/serverless";
 import { openTlsStream } from "../../bridge/src/mqtt/transport-node.ts";
+import { pollCloudHttp } from "../../bridge/src/providers/cloud-http.ts";
 import { importKeyringFromEnv } from "../../hosted/src/crypto.ts";
 import type { LogDetail } from "../../hosted/src/log.ts";
 import { NeonStore } from "../../hosted/src/store-neon.ts";
@@ -223,6 +224,8 @@ async function main(): Promise<number> {
     store: new NeonStore(databaseUrl),
     keyring,
     connect: openTlsStream,
+    // The same read the Worker's cron performs, for the same reason.
+    pollCloud: pollCloudHttp,
     now: () => Date.now(),
     sleep: (ms) => sleepUntilStopped(ms, shutdown.promise),
     stopping: () => stopping,

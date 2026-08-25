@@ -91,6 +91,9 @@ function harness(
     connect: async () => {
       throw new Error("no session should be opened in these tests");
     },
+    pollCloud: async () => {
+      throw new Error("no cloud read should happen in these tests");
+    },
     now: () => 1_000_000,
     sleep: async (ms) => {
       // Real time, but tiny and bounded by the script: the point of these tests

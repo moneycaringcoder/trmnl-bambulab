@@ -90,6 +90,15 @@ jobs:
         run: npm install --global pnpm@11.13.1
         working-directory: .
 
+      # Two installs. The hosted tier runs the bridge's modules from source —
+      # the cron's poller, the payload builder, the templates' variable shape —
+      # so typechecking it typechecks bridge files too, and those resolve `zod`
+      # from the bridge's own `node_modules`, which a hosted-only install does
+      # not create. Same lesson the collector job learned, same fix.
+      - name: Install the bridge's dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+        working-directory: bridge
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
 

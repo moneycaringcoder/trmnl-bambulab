@@ -7,48 +7,57 @@ name and print essentials; absent metrics never reserve a blank row.
   {% for printer in printers %}
     <div class="item">
       <div class="content">
-        {% render "alert_marker", alert: printer.alert, show_detail: false %}
-
+        {% assign unreadable = false %}
         {% if printer.stale or printer.state == "offline" or printer.state == "unknown" %}
+          {% assign unreadable = true %}
+        {% endif %}
+        {% unless unreadable %}
+          {% render "alert_marker", alert: printer.alert, show_detail: false %}
+        {% endunless %}
+
+        {% if printer.stale %}
           <span class="value value--base">Reading old</span>
-          <span class="label">
-            {% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}
-            · {{ printer.state | capitalize }}
-          </span>
+          <span class="label">{% if printer.name %}{{ printer.name | escape }}{% else %}Printer{% endif %}</span>
+        {% elsif printer.state == "offline" %}
+          <span class="value value--base">Offline</span>
+          <span class="label">{% if printer.name %}{{ printer.name | escape }}{% else %}Printer{% endif %}</span>
+        {% elsif printer.state == "unknown" %}
+          <span class="value value--base">Unknown</span>
+          <span class="label">{% if printer.name %}{{ printer.name | escape }}{% else %}Printer{% endif %}</span>
         {% elsif printer.state == "idle" %}
           {% if printers.size == 3 %}
             <span class="value value--base">Ready</span>
           {% else %}
             <span class="value value--large">Ready</span>
           {% endif %}
-          <span class="label">{% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}</span>
+          <span class="label">{% if printer.name %}{{ printer.name | escape }}{% else %}Printer{% endif %}</span>
         {% else %}
           {% if printer.progress %}
             {% if printers.size == 3 %}
-              <span class="value value--large value--tnums">{{ printer.progress }}%</span>
+              <span class="value value--large value--tnums">{{ printer.progress | escape }}%</span>
             {% else %}
-              <span class="value value--xxlarge value--tnums">{{ printer.progress }}%</span>
+              <span class="value value--xxlarge value--tnums">{{ printer.progress | escape }}%</span>
             {% endif %}
           {% else %}
-            <span class="value value--base">{{ printer.state | capitalize }}</span>
+            <span class="value value--base">{{ printer.state | capitalize | escape }}</span>
           {% endif %}
-          <span class="label">{% if printer.name %}{{ printer.name }}{% else %}Printer{% endif %}</span>
+          <span class="label">{% if printer.name %}{{ printer.name | escape }}{% else %}Printer{% endif %}</span>
           {% comment %}
             Only when the headline is a percentage; see half_horizontal.liquid.
           {% endcomment %}
           {% if printer.progress %}
-            <span class="description">{{ printer.state | capitalize }}</span>
+            <span class="description">{{ printer.state | capitalize | escape }}</span>
           {% endif %}
           {% if printers.size == 3 %}
             {% render "progress_rail", progress: printer.progress, size: "progress-bar--xsmall" %}
           {% else %}
             {% render "progress_rail", progress: printer.progress, size: "progress-bar--small" %}
           {% endif %}
-          {% if printer.remaining %}<span class="description">{{ printer.remaining }} remaining</span>{% endif %}
+          {% if printer.remaining %}<span class="description">{{ printer.remaining | escape }} remaining</span>{% endif %}
           {% if printer.layer %}
-            <span class="description">Layer {{ printer.layer }}{% if printer.layers %} / {{ printer.layers }}{% endif %}</span>
+            <span class="description">Layer {{ printer.layer | escape }}{% if printer.layers %} / {{ printer.layers | escape }}{% endif %}</span>
           {% elsif printer.layers %}
-            <span class="description">{{ printer.layers }} total layers</span>
+            <span class="description">{{ printer.layers | escape }} total layers</span>
           {% endif %}
         {% endif %}
       </div>

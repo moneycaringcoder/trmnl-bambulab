@@ -511,6 +511,8 @@
         printers: null,
         completedCount: null,
       };
+      const retryableMessage =
+        "Could not reach the service. Check your connection and try again.";
 
       function esc(value) {
         return String(value).replace(
@@ -590,7 +592,10 @@
         if (typeof value !== "string" || value === "") return null;
         try {
           const url = new URL(value);
-          return url.protocol === "https:" && url.hostname === "trmnl.com" ? value : null;
+          return url.protocol === "https:" &&
+            (url.hostname === "trmnl.com" || url.hostname.endsWith(".trmnl.com"))
+            ? value
+            : null;
         } catch {
           return null;
         }
@@ -696,24 +701,29 @@
           }
           const button = el.querySelector("button");
           button.disabled = true;
-          const result = await api("POST", "/v1/enrol/code", { region, email });
-          button.disabled = false;
-          if (result.status === 401) return;
+          try {
+            const result = await api("POST", "/v1/enrol/code", { region, email });
+            if (result.status === 401) return;
 
-          if (result.status === 204 || result.status === 200) {
-            state.email = email;
-            state.region = region;
-            paint("l1", "active", {
-              number: "01",
-              title: "Enter the code Bambu emailed you",
-              blurbHtml:
-                `Sent to <strong>${esc(email)}</strong>. Codes expire quickly, so use the newest one. ` +
-                "We never ask for your Bambu password.",
-              body: bambuCodeForm(),
-            });
-            return;
+            if (result.status === 204 || result.status === 200) {
+              state.email = email;
+              state.region = region;
+              paint("l1", "active", {
+                number: "01",
+                title: "Enter the code Bambu emailed you",
+                blurbHtml:
+                  `Sent to <strong>${esc(email)}</strong>. Codes expire quickly, so use the newest one. ` +
+                  "We never ask for your Bambu password.",
+                body: bambuCodeForm(),
+              });
+              return;
+            }
+            say(parent, "Bambu Cloud could not send a code. Try again shortly.");
+          } catch {
+            say(parent, retryableMessage);
+          } finally {
+            button.disabled = false;
           }
-          say(parent, "Bambu Cloud could not send a code. Try again shortly.");
         });
         return form;
       }
@@ -740,20 +750,26 @@
           const code = el.querySelector("#bc").value.trim();
           const button = el.querySelector("button");
           button.disabled = true;
-          const result = await api("POST", "/v1/enrol/session", {
-            region: state.region,
-            email: state.email,
-            code,
-          });
-          button.disabled = false;
-          if (result.status === 401) return;
+          try {
+            const result = await api("POST", "/v1/enrol/session", {
+              region: state.region,
+              email: state.email,
+              code,
+            });
+            if (result.status === 401) return;
 
-          if (result.status === 200 && Array.isArray(result.body?.printers)) {
-            state.printers = result.body.printers;
-            await route();
-            return;
+            if (result.status === 200 && Array.isArray(result.body?.printers)) {
+              state.email = null;
+              state.printers = result.body.printers;
+              await route();
+              return;
+            }
+            say(parent, result.body?.error ?? "That code was not accepted.");
+          } catch {
+            say(parent, retryableMessage);
+          } finally {
+            button.disabled = false;
           }
-          say(parent, result.body?.error ?? "That code was not accepted.");
         });
         return form;
       }
@@ -818,18 +834,23 @@
           }
           const button = el.querySelector("button");
           button.disabled = true;
-          const result = await api("POST", "/v1/enrol/printers", { deviceIds: chosen });
-          button.disabled = false;
-          if (result.status === 401) return;
+          try {
+            const result = await api("POST", "/v1/enrol/printers", { deviceIds: chosen });
+            if (result.status === 401) return;
 
-          if (result.status === 204 || result.status === 200) {
-            state.account = { device_ids: chosen, reauth_required: false };
-            state.printers = null;
-            state.completedCount = chosen.length;
-            await route();
-            return;
+            if (result.status === 204 || result.status === 200) {
+              state.account = { device_ids: chosen, reauth_required: false };
+              state.printers = null;
+              state.completedCount = chosen.length;
+              await route();
+              return;
+            }
+            say(parent, result.body?.error ?? "Could not save that selection.");
+          } catch {
+            say(parent, retryableMessage);
+          } finally {
+            button.disabled = false;
           }
-          say(parent, result.body?.error ?? "Could not save that selection.");
         });
         return form;
       }
@@ -874,26 +895,60 @@
               <button type="button" data-act="printers" data-kind="quiet">Change printers</button>
               <button type="button" data-act="del" data-kind="danger">Delete everything</button>
             </div>
+            <div data-delete-confirm hidden>
+              <p>
+                Delete the hosted account, saved sign-in, printer selection, and screen data?
+                This cannot be undone.
+              </p>
+              <div class="row">
+                <button type="button" data-act="cancel-delete" data-kind="quiet">Cancel</button>
+                <button type="button" data-act="confirm-delete" data-kind="danger">
+                  Confirm deletion
+                </button>
+              </div>
+            </div>
           </div>
         `);
 
         wrap.querySelector('[data-act="printers"]').addEventListener("click", () => startBambu());
-        wrap.querySelector('[data-act="del"]').addEventListener("click", async (event) => {
-          const button = event.target;
-          if (button.dataset.confirm !== "yes") {
-            button.dataset.confirm = "yes";
-            button.textContent = "Delete everything — click again";
-            return;
-          }
-          const result = await api("DELETE", "/v1/account");
-          if (result.status === 401) return;
-          if (result.status === 204 || result.status === 200) {
-            state.account = null;
-            state.printers = null;
-            state.completedCount = null;
-            startBambu();
-          } else {
-            say($("l3"), result.body?.error ?? "Could not delete the account.");
+        const deleteButton = wrap.querySelector('[data-act="del"]');
+        const confirmation = wrap.querySelector("[data-delete-confirm]");
+        const cancelButton = wrap.querySelector('[data-act="cancel-delete"]');
+        const confirmButton = wrap.querySelector('[data-act="confirm-delete"]');
+
+        deleteButton.addEventListener("click", () => {
+          // The original target stays disabled in place, so a normal double
+          // click cannot land on the distinct confirmation control below it.
+          deleteButton.disabled = true;
+          confirmation.hidden = false;
+          cancelButton.focus();
+        });
+        cancelButton.addEventListener("click", () => {
+          confirmation.querySelector(".msg")?.remove();
+          confirmation.hidden = true;
+          deleteButton.disabled = false;
+          deleteButton.focus();
+        });
+        confirmButton.addEventListener("click", async () => {
+          confirmButton.disabled = true;
+          confirmation.querySelector(".msg")?.remove();
+          cancelButton.disabled = true;
+          try {
+            const result = await api("DELETE", "/v1/account");
+            if (result.status === 401) return;
+            if (result.status === 204 || result.status === 200) {
+              state.account = null;
+              state.printers = null;
+              state.completedCount = null;
+              startBambu();
+              return;
+            }
+            say(confirmation, result.body?.error ?? "Could not delete the account.");
+          } catch {
+            say(confirmation, retryableMessage);
+          } finally {
+            confirmButton.disabled = false;
+            cancelButton.disabled = false;
           }
         });
         return wrap;

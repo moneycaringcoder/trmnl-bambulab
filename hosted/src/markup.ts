@@ -43,9 +43,26 @@ function extractSharedTemplates(source: string): Record<string, string> {
   return templates;
 }
 
+/**
+ * HTML-escapes an output value while preserving an entity an explicit Liquid
+ * `escape` filter already produced. The templates carry those filters because
+ * TRMNL's native renderer must be safe too; this engine-level pass is the
+ * defense for any future interpolation whose author forgets one.
+ */
+function escapeHtmlOnce(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  return String(value)
+    .replace(/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-f]+);)/gi, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 const engine = new Liquid({
   cache: true,
   templates: extractSharedTemplates(sharedTemplate),
+  outputEscape: escapeHtmlOnce,
 });
 
 const layouts = {

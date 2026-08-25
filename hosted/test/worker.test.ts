@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cycleLogDetail, routeResponse, safeTrmnlCallback } from "../src/worker.ts";
+import worker, { cycleLogDetail, routeResponse, safeTrmnlCallback } from "../src/worker.ts";
 import type { RouteResult } from "../src/routes.ts";
 import type { AccountCycleSummary } from "../src/cycle.ts";
 
@@ -125,5 +125,94 @@ describe("routeResponse", () => {
     for (const result of results) {
       expect(routeResponse(result).headers.get("Cache-Control")).toBe("no-store");
     }
+  });
+});
+
+describe("anonymous request guards", () => {
+  it.each(["/v1/account", "/trmnl/markup"])(
+    "applies the address ceiling before other work on %s",
+    async (path) => {
+      const keys: string[] = [];
+      const env = {
+        SCREEN_ADDRESS_LIMITER: {
+          async limit({ key }: { key: string }) {
+            keys.push(key);
+            return { success: false };
+          },
+        },
+        get DATABASE_URL(): string {
+          throw new Error("database must not be reached");
+        },
+      } as unknown as Env;
+
+      const response = await worker.fetch(
+        new Request(`https://hosted.example${path}`, {
+          method: path.startsWith("/trmnl/") ? "POST" : "GET",
+          headers: { "CF-Connecting-IP": "192.0.2.10" },
+        }),
+        env,
+      );
+
+      expect(response.status).toBe(429);
+      expect(keys).toEqual(["192.0.2.10"]);
+    },
+  );
+
+  it("fails closed before an unauthenticated install token exchange when the limiter fails", async () => {
+    const env = {
+      SCREEN_ADDRESS_LIMITER: {
+        async limit() {
+          throw new Error("limiter unavailable");
+        },
+      },
+      get DATABASE_URL(): string {
+        throw new Error("database must not be reached");
+      },
+    } as unknown as Env;
+
+    const response = await worker.fetch(
+      new Request("https://hosted.example/trmnl/install?code=synthetic"),
+      env,
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it.each([
+    ["an absent Content-Length", "/v1/enrol/code", undefined],
+    ["a dishonest Content-Length", "/trmnl/installed", "1"],
+  ])("bounds %s before keyring and database work", async (_case, path, contentLength) => {
+    const headers: Record<string, string> = {
+      "CF-Connecting-IP": "192.0.2.11",
+      "Content-Type": "application/json",
+    };
+    if (contentLength !== undefined) headers["Content-Length"] = contentLength;
+
+    const request = new Request(`https://hosted.example${path}`, {
+      method: "POST",
+      headers,
+      body: "x".repeat(16 * 1024),
+    });
+    if (contentLength === undefined) {
+      expect(request.headers.get("Content-Length")).toBeNull();
+    }
+
+    const env = {
+      SCREEN_ADDRESS_LIMITER: {
+        async limit() {
+          throw new Error("limiter unavailable");
+        },
+      },
+      get DATABASE_URL(): string {
+        throw new Error("database must not be reached");
+      },
+    } as unknown as Env;
+
+    const response = await worker.fetch(request, env);
+
+    expect(response.status).toBe(413);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    await expect(response.text()).resolves.toBe("Payload Too Large");
   });
 });

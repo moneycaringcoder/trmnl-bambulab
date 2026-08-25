@@ -615,18 +615,119 @@
           for (const button of el.querySelectorAll("button")) button.disabled = false;
 
           if (!result.ok) {
-            const code = result.body?.code ?? "";
+            // An unverified address cannot sign in, and telling someone to "sign
+            // in again" is a loop with no exit. Send a fresh code and show the
+            // field to type it into.
+            if (result.body?.code === "EMAIL_NOT_VERIFIED") {
+              await auth("/email-otp/send-verification-otp", {
+                email,
+                type: "email-verification",
+              });
+              showVerify(email);
+              return;
+            }
             say(
               parent,
-              code === "EMAIL_NOT_VERIFIED"
-                ? "Check your inbox for the verification code, then sign in again."
-                : (result.body?.message ?? "That did not work. Check the email and password."),
+              result.body?.message ?? "That did not work. Check the email and password.",
             );
             return;
           }
+
+          // A successful sign-up on a project that requires verification returns a
+          // user who is not verified yet and no usable session, so the code step
+          // is the next thing rather than an error.
+          if (result.body?.user?.emailVerified === false) {
+            showVerify(email);
+            return;
+          }
+
           if (await refreshToken()) await route();
-          else say(parent, "Signed in, but no session token came back. Reload and try again.");
+          else showVerify(email);
         }
+
+        return form;
+      }
+
+      /** The code step, for verifying the address the account was created with. */
+      function showVerify(email) {
+        paint("l1", "active", {
+          number: "01",
+          title: "Confirm your email",
+          blurbHtml:
+            `We emailed a code to <strong>${esc(email)}</strong>. Enter it to confirm ` +
+            "the address. Codes last fifteen minutes.",
+          body: verifyForm(email),
+        });
+      }
+
+      function verifyForm(email) {
+        const form = node(`
+          <form novalidate>
+            <div class="field">
+              <label for="vc">Code</label>
+              <input id="vc" name="code" inputmode="numeric" autocomplete="one-time-code"
+                     maxlength="10" required />
+            </div>
+            <div class="row">
+              <button type="submit">Confirm</button>
+              <button type="button" data-kind="quiet" data-act="resend">Send a new code</button>
+              <button type="button" data-kind="quiet" data-act="back">Start over</button>
+            </div>
+          </form>
+        `);
+        const el = form.querySelector("form");
+
+        el.querySelector('[data-act="back"]').addEventListener("click", async () => {
+          state.token = null;
+          await route();
+        });
+
+        el.querySelector('[data-act="resend"]').addEventListener("click", async (event) => {
+          event.target.disabled = true;
+          const sent = await auth("/email-otp/send-verification-otp", {
+            email,
+            type: "email-verification",
+          });
+          event.target.disabled = false;
+          say(
+            $("l1"),
+            sent.ok ? "A new code is on its way." : "Could not send another code just yet.",
+            sent.ok ? "ok" : undefined,
+          );
+        });
+
+        el.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const otp = el.querySelector("#vc").value.trim();
+          if (otp === "") {
+            say($("l1"), "Enter the code from the email.");
+            return;
+          }
+          const button = el.querySelector("button");
+          button.disabled = true;
+          const result = await auth("/email-otp/verify-email", { email, otp });
+          button.disabled = false;
+
+          if (!result.ok) {
+            // Our wording, not the provider's. It answers with "Invalid OTP",
+            // which is both jargon and silent about the likeliest cause.
+            say(
+              $("l1"),
+              "That code was not accepted. Codes expire after fifteen minutes, so send " +
+                "a new one if it has been a while.",
+            );
+            return;
+          }
+          // Verification signs the user in by default, so a token should be
+          // available immediately. If it is not, the account is verified and a
+          // plain sign-in will now work.
+          if (await refreshToken()) await route();
+          else {
+            state.token = null;
+            await route();
+            say($("l1"), "Email confirmed. Sign in to continue.", "ok");
+          }
+        });
 
         return form;
       }

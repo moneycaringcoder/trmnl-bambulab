@@ -37,16 +37,19 @@ The payload is arriving — TRMNL returns 200 — but a Private Plugin renders
 whatever markup is in its editor, and yours is still empty. So the data is
 there and nothing is drawing it.
 
-Copy the contents of these four files into the matching markup boxes in the
-plugin's editor, and `plugin/src/shared.liquid` into the shared markup box:
+The plugin's repository sync reads `src/` in the repository root, so these are
+already where TRMNL looks:
 
 ```text
-plugin/src/full.liquid
-plugin/src/half_horizontal.liquid
-plugin/src/half_vertical.liquid
-plugin/src/quadrant.liquid
-plugin/src/shared.liquid
+src/full.liquid
+src/half_horizontal.liquid
+src/half_vertical.liquid
+src/quadrant.liquid
+src/shared.liquid
 ```
+
+`src/settings.yml` is written by TRMNL, not by this repository. Leave it alone:
+it carries the plugin's own id, and editing it here pushes the edit back.
 
 Then tell me whether it reads well from across the room, because that is the
 one judgement I cannot make from here. `plugin/_build/*.png` is what I think it
@@ -136,10 +139,11 @@ an account. What is left, in order:
    reached Postgres while 100 were refused before it. Sign-up throttling now
    exists as well: `ENROL_LIMITER`, ten attempts a minute per identity,
    consulted before the route can make Bambu send an email.
-6. ~~**Publish the recipe.**~~ **Declared, not published.** `plugin/src/settings.yml`
-   carries the polling strategy, the header interpolation and the one password
-   field. Publishing an Unlisted Recipe is an action in TRMNL's interface, so
-   it is the owner's to take.
+6. **Publish the recipe.** The hosted tier's polling settings are recorded in
+   `docs/TRMNL-PLUGIN.md` rather than in `src/settings.yml`, because that file
+   is owned by the sync and can only describe one strategy — and the live
+   plugin is the self-hosted webhook one. Publishing an Unlisted Recipe is an
+   action in TRMNL's interface, so it is the owner's to take.
 
 What remains is a browser page for step 2, and publishing the recipe, which is a
 button in TRMNL's interface and therefore the owner's. Identity is no longer a

@@ -1,6 +1,7 @@
 # Sanitized local TRMNL preview data.
 #
-# Copy this file to plugin/.trmnlp.yml. The destination is git-ignored because
+# Copy this file to .trmnlp.yml in the repository root, beside src/. The
+# destination is git-ignored because
 # a developer may later add an API key; never put credentials in this example.
 ---
 watch:

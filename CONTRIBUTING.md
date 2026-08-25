@@ -18,7 +18,7 @@ public issue.
 | `bridge/` | The bridge: cloud providers, normalizers, coordinator, payload builder, subscribe-only MQTT client, push scheduler, daemon, and setup CLI. |
 | `bridge/fixtures/` | Sanitized and synthetic fixtures, split into `cloud/` and `merged/`. |
 | `bridge/test/` | Vitest suites, driven by those fixtures. |
-| `plugin/` | The TRMNL Private Plugin: `settings.yml`, shared markup, and the four viewport Liquid templates. |
+| `src/` | The TRMNL Private Plugin: shared markup and the four viewport Liquid templates. TRMNL's repository sync reads this path and writes `src/settings.yml`, so neither the directory nor that file may move. |
 | `hosted/` | The hosted tier: Neon schema and store, token encryption, and the Cloudflare Worker cron. |
 | `docs/` | Decisions, the plan, what we know of the cloud interface, the plugin contract, and sources. |
 | `scripts/` | `secret-scan.sh` and the agent session launcher. |

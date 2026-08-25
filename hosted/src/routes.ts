@@ -35,7 +35,7 @@ import type { Account, Region, Store } from "./store.ts";
  * The ceiling on printers per account.
  *
  * Three because that is what the display can carry legibly at 800x480 in one
- * bit, which is a rendering fact rather than a storage one. See `plugin/`.
+ * bit, which is a rendering fact rather than a storage one. See `src/`.
  */
 export const MAX_PRINTERS = 3;
 

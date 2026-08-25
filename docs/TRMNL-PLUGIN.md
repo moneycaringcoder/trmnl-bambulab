@@ -259,6 +259,23 @@ custom_fields:
   help_text: Copy this from the hosted enrolment page. You can rotate it there.
 ```
 
+That Recipe's settings are written down here rather than kept in
+`src/settings.yml`, and the reason is a mistake worth not repeating. That
+file is uploaded by `trmnlp push` and by any repository sync, so whatever it
+declares becomes the live plugin's configuration. While it declared
+`strategy: polling` for a hosted tier that is not deployed, a single sync would
+have reconfigured the one plugin that does exist — the self-hosted webhook one —
+and pointed it at a placeholder host. One live settings file, one strategy, and
+the other tier's settings kept as documentation:
+
+```yaml
+strategy: polling
+refresh_interval: 15
+polling_url: https://<your-worker-host>/v1/screen
+polling_headers: 'authorization=bearer ##{{ screen_key }}'
+polling_verb: GET
+```
+
 Polling headers assign a header with `=` and separate multiple headers with
 `&`. The screen key uses TRMNL's documented `##{{ }}` custom-field prefix
 exactly; its header setting is:[2]

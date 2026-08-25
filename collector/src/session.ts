@@ -20,7 +20,12 @@ import { accept, emptyCoordinatorState, snapshotsFor } from "../../bridge/src/co
 import { buildWebhookPayload } from "../../bridge/src/push/payload.ts";
 import { hostsFor, CLOUD_MQTT_PORT } from "../../bridge/src/providers/bambu-cloud/hosts.ts";
 import { watchCloudMqtt } from "../../bridge/src/providers/cloud-mqtt.ts";
-import type { ByteStream, SessionEnd } from "../../bridge/src/mqtt/client.ts";
+import {
+  systemTimers,
+  type ByteStream,
+  type SessionEnd,
+  type Timers,
+} from "../../bridge/src/mqtt/client.ts";
 import type { CoordinatorState } from "../../bridge/src/coordinator/merge.ts";
 import type { Observation } from "../../bridge/src/types.ts";
 import type { Account, Store } from "../../hosted/src/store.ts";
@@ -69,6 +74,8 @@ export interface SessionPorts {
    * self-hosted bridge does it.
    */
   baseline: readonly Observation[];
+  /** Defaults to the runtime clock; injected to make delayed coalescing deterministic. */
+  timers?: Pick<Timers, "once">;
   /** Called after each stored render, for logging that names no printer. */
   onRender?(detail: { bytes: number; printers: number }): void;
 }
@@ -101,7 +108,15 @@ export async function runAccountSession(
   }
   let pending = false;
   let writing: Promise<void> | null = null;
+  let cancelDelayedRender: (() => void) | null = null;
   let lastRenderAt = 0;
+  const timers = ports.timers ?? systemTimers;
+
+  function cancelScheduledRender(): void {
+    if (cancelDelayedRender === null) return;
+    cancelDelayedRender();
+    cancelDelayedRender = null;
+  }
   /**
    * Set once this session must stop.
    *
@@ -145,17 +160,9 @@ export async function runAccountSession(
     ports.onRender?.({ bytes, printers: snapshots.length });
   };
 
-  /** Coalesces a burst of reports into one write. */
-  const scheduleRender = (): void => {
-    if (writing !== null) {
-      pending = true;
-      return;
-    }
-    const since = ports.now() - lastRenderAt;
-    if (since < RENDER_COALESCE_MS) {
-      pending = true;
-      return;
-    }
+  const beginRender = (): void => {
+    if (halted || writing !== null) return;
+    cancelScheduledRender();
     writing = render()
       .catch(() => {
         // A failed write is not a reason to drop the session. The next report is
@@ -166,6 +173,40 @@ export async function runAccountSession(
         if (pending) scheduleRender();
       });
   };
+
+  /** Coalesces a burst into one write and guarantees the final state a deadline. */
+  const scheduleRender = (): void => {
+    if (halted) return;
+    if (writing !== null) {
+      pending = true;
+      return;
+    }
+    const remaining = RENDER_COALESCE_MS - (ports.now() - lastRenderAt);
+    if (remaining > 0) {
+      pending = true;
+      if (cancelDelayedRender === null) {
+        cancelDelayedRender = timers.once(remaining, () => {
+          cancelDelayedRender = null;
+          if (!halted && pending) beginRender();
+        });
+      }
+      return;
+    }
+    beginRender();
+  };
+
+  // Arm the write fence before the baseline render. The stop signal can already
+  // be resolved when this function is entered, and even that case must not begin
+  // a database write for a lease this process no longer owns.
+  void ports.stopped.then(() => {
+    halted = true;
+    pending = false;
+    cancelScheduledRender();
+  });
+  // Promise reactions run on a microtask. Yield once so an already-resolved
+  // stop signal closes the fence before the synchronous part of `render` can
+  // begin a baseline write.
+  await Promise.resolve();
 
   // Write what HTTP already knows, before waiting on a single report. An idle
   // account may not produce an MQTT report for hours, and until one arrives this
@@ -197,7 +238,6 @@ export async function runAccountSession(
   // are needed, because a healthy broker never ends a session on its own and the
   // process that has lost its lease must stop writing rows a standby now owns.
   void ports.stopped.then(() => {
-    halted = true;
     void stop();
   });
 
@@ -206,7 +246,11 @@ export async function runAccountSession(
   // burst does not discard the newest state. Not after a halt: those rows belong
   // to whoever holds the lease now.
   if (!halted && (pending || writing !== null)) {
+    cancelScheduledRender();
     await writing;
+    // A completed write can schedule the delayed follow-up from its `finally`.
+    // Cancel that timer too before flushing immediately on the ordinary end.
+    cancelScheduledRender();
     if (pending) await render().catch(() => undefined);
   }
   return ending;

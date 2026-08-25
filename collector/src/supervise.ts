@@ -113,19 +113,13 @@ export async function supervise(
   ports.log("info", "holding the collection lease", { instance: options.instance });
 
   try {
-    // `collectAll` returns when every account it started has finished, which
-    // happens on a fresh deployment with nobody enrolled and again once the
-    // cloud has refused everyone. Exiting there would be wrong twice over: a
-    // container that exits zero is not restarted by an `on-failure` policy, so
-    // the next person to enrol would get no live telemetry until somebody
-    // noticed. So the process keeps the lease and looks again.
-    while (!ports.stopping()) {
-      await collectAll(ports, { maxAccounts: options.maxAccounts });
-      if (ports.stopping()) break;
-      // A new enrolment waits at most this long for live telemetry, and the
-      // cron already covers it at HTTP fidelity in the meantime.
-      await ports.sleep(options.rediscoverMs);
-    }
+    // Discovery and session lifetimes are supervised independently inside
+    // `collectAll`: healthy sessions remain live while the account set is read
+    // again, and newly enrolled accounts join without restarting the process.
+    await collectAll(ports, {
+      maxAccounts: options.maxAccounts,
+      rediscoverMs: options.rediscoverMs,
+    });
   } finally {
     await lease.release().catch(() => {
       // Failing to give the lock back on the way out is harmless: Postgres frees

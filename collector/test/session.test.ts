@@ -495,6 +495,57 @@ describe("stopping a live session", () => {
     return { writes, broker, finished, halt: shutdown.resolve };
   }
 
+  it("renders the final coalesced report when its delay expires without another report", async () => {
+    const writes: Screen[] = [];
+    const broker = new OpenBroker([CONNACK_OK, SUBACK_OK]);
+    const shutdown = Promise.withResolvers<void>();
+    const clock = { now: 1_000_000 };
+    const delayed = { fire: null as (() => void) | null };
+    const timerArmed = Promise.withResolvers<void>();
+    const finished = runAccountSession(account(), {
+      store: recordingStore(writes),
+      connect: async () => broker,
+      username: "u_1234567",
+      accessToken: "cloud-token",
+      clientId: "collector-test",
+      now: () => clock.now,
+      stopped: shutdown.promise,
+      baseline: [],
+      timers: {
+        once(afterMs, run) {
+          timerArmed.resolve();
+          let active = true;
+          delayed.fire = () => {
+            if (!active) return;
+            active = false;
+            clock.now += afterMs;
+            run();
+          };
+          return () => {
+            active = false;
+          };
+        },
+      },
+    });
+
+    broker.push(report(DEVICE, PRINTING));
+    await broker.whenReadyForMore();
+    broker.push(report(DEVICE, { gcode_state: "RUNNING", mc_percent: 73 }));
+    await broker.whenReadyForMore();
+    await timerArmed.promise;
+
+    expect(writes).toHaveLength(1);
+    expect(delayed.fire).not.toBeNull();
+    delayed.fire?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(writes).toHaveLength(2);
+    expect(JSON.parse(writes[1]?.body ?? "{}").printers?.[0]?.progress).toBe(73);
+    shutdown.resolve();
+    await finished;
+  });
+
   /**
    * Runs one report, holds its write open, sends a second report, then either
    * halts or does not, and reports what was written.
@@ -599,6 +650,45 @@ describe("stopping a live session", () => {
     // A flag would leave this socket open, and with it the second MQTT
     // connection Bambu counts against the account.
     expect(session.broker.isClosed).toBe(true);
+  });
+
+  it("does not write a baseline when stop was already requested", async () => {
+    const writes: Screen[] = [];
+    const broker = new OpenBroker([CONNACK_OK, SUBACK_OK]);
+    const stopped = Promise.resolve();
+    const finished = runAccountSession(account(), {
+      store: recordingStore(writes),
+      connect: async () => broker,
+      username: "u_1234567",
+      accessToken: "cloud-token",
+      clientId: "collector-test",
+      now: () => 1_000_000,
+      stopped,
+      baseline: [
+        {
+          providerId: "cloud-http",
+          printerKey: DEVICE,
+          receivedAt: 1_000_000,
+          observedAt: null,
+          fields: {
+            printer: { name: "Workshop", online: true },
+            job: { state: "idle", rawState: "IDLE" },
+          },
+          capabilities: {
+            realtimeTelemetry: false,
+            temperatures: false,
+            filament: false,
+            alerts: false,
+            deviceDiscovery: true,
+            projectMetadata: false,
+            coverImage: false,
+          },
+        },
+      ],
+    });
+
+    await finished;
+    expect(writes).toEqual([]);
   });
 
   it("writes nothing once it has been asked to stop", async () => {

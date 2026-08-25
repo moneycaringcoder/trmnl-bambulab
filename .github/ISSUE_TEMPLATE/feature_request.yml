@@ -12,7 +12,7 @@ body:
           a monitoring project, and a slow-refresh e-paper display is the wrong
           feedback channel for a machine that melts plastic.
         - **Weakening transport security.** No TLS bypass, no `insecure`
-          option, no credential leaving the user's machine.
+          option, and no credential sent anywhere except its intended service.
 
         Everything else is open. Say what you want the display to show and
         why; the maintainers will push back if it fights the constraints.

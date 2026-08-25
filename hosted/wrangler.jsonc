@@ -123,14 +123,22 @@
   // layer. Fill it in once the real list has been checked.
   //
   // NEON_AUTH_BASE_URL is the identity provider's base URL, for example
-  // `https://<endpoint>.aws.neon.tech/<database>/auth`. It is not a secret: it
-  // is public and the browser talks to it too. Empty means identity is not
-  // provisioned, and then the whole enrolment surface answers 404 rather than
-  // trusting its caller. The expected issuer and audience are both derived from
-  // its origin, so there is no second setting to get wrong.
+  // `https://<endpoint>.aws.neon.tech/<database>/auth`. The expected issuer and
+  // audience are both derived from its origin, so there is no second setting to
+  // get wrong. It is not secret — the browser talks to it too — but it names
+  // infrastructure, so it is set as a secret rather than committed here, and it
+  // must not also appear in `vars`: a var and a secret of the same name are the
+  // same binding, and a deploy rewrites vars.
   "vars": {
     "TOKEN_KEY_CURRENT_ID": "k1",
-    "TRMNL_ALLOWED_IPS": "",
-    "NEON_AUTH_BASE_URL": ""
+    "TRMNL_ALLOWED_IPS": ""
+  },
+
+  // Named so a deploy that forgot one fails instead of shipping a Worker whose
+  // sign-in answers 404 or whose cron cannot open a single stored token.
+  // TOKEN_KEY_K1 in particular must be the *same* key that sealed the existing
+  // rows: a fresh one silently orphans every enrolment.
+  "secrets": {
+    "required": ["DATABASE_URL", "TOKEN_KEY_K1", "NEON_AUTH_BASE_URL"]
   }
 }

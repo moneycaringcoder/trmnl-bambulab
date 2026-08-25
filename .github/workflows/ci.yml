@@ -108,3 +108,55 @@ jobs:
       # Needs no credential: --dry-run neither uploads nor authenticates.
       - name: Bundle
         run: pnpm exec wrangler deploy --dry-run
+
+  collector:
+    name: collector
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: collector
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pnpm
+        run: npm install --global pnpm@11.13.1
+        working-directory: .
+
+      # Three installs, not one. The collector runs the bridge's and the hosted
+      # tier's modules from source rather than copying them, so typechecking it
+      # typechecks their files too — and those resolve `zod` and
+      # `@neondatabase/serverless` from their own `node_modules`, which a
+      # collector-only install does not create. Verified by running this job's
+      # steps against a clean checkout: without these two, `pnpm typecheck` fails
+      # on both imports while the tests still pass, because vitest resolves them
+      # from the collector's tree and tsc does not.
+      - name: Install the bridge's dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+        working-directory: bridge
+
+      - name: Install the hosted tier's dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+        working-directory: hosted
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # These tests carry the two guarantees this package exists to keep, and an
+      # audit found a real break in the second one: that nothing here can publish
+      # to a printer, and that losing the lease stops collection instead of
+      # leaving two MQTT sessions on one Bambu account. Running them only locally
+      # is how that break reached review in the first place.
+      - name: Test
+        run: pnpm test

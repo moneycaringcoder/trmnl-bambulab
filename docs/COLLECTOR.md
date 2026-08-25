@@ -1,30 +1,22 @@
 # The collector
 
-**Status: built and verified except for one live seam.** The lease,
-orchestration, and render path are covered by tests and have been exercised as
-real processes against Postgres and the Bambu Cloud failure path. The
-pooled-endpoint refusal and two-instance failover have also been observed. A
-collector session using a valid stored Bambu token has not yet been exercised
-end to end, so that seam remains explicitly unverified.
+An optional always-on process that gives hosted installations live telemetry.
+It holds one subscribe-only MQTT connection per enrolled Bambu account and
+writes rendered screens into the same table the Worker's cron writes; when it
+is not running, the hosted tier continues at HTTP fidelity — name and state —
+and never blanks.
 
-The container has been built and started. It runs as `node`, `uid=1000`, exposes
-no port, bakes no secret, and needs no writable filesystem. Under `--read-only
---cap-drop=ALL --security-opt=no-new-privileges` it reports a missing
-`DATABASE_URL` and exits 78 as designed. The image has not been run inside a
-Proxmox LXC, so the LXC guidance below is based on measured resource use rather
-than an observed Proxmox deployment.
+This document is the design and the operations guide for the machine that runs
+it. Where a number is measured rather than estimated, it says so.
 
-The collector must close every live MQTT session as soon as it loses the lease.
-An earlier implementation discarded the broker's stop handle, so a collector
-that lost its lease kept its connections and continued writing rows after a
-standby took over. That creates two MQTT connections on one Bambu account, the
-condition this lease exists to prevent. The orchestration now lives in
-`collector/src/supervise.ts`, where four tests fail if the stop handle is
-dropped again.
-
-This document records the design, the measurements, and the operations guide for
-the machine that runs it. Where a number is measured rather than estimated, it
-says so.
+One requirement shapes most of what follows: the collector must close every
+live MQTT session the moment it loses its lease. The lock is gone by the time
+the heartbeat notices, so a standby may already be collecting the same
+accounts, and a holder that merely stopped *renewing* would leave two MQTT
+connections on one Bambu account — the condition Bambu bans for and the one
+the lease exists to prevent. The orchestration lives in
+`collector/src/supervise.ts`, and four tests fail if a session ever becomes
+unstoppable again.
 
 ## What it is for
 

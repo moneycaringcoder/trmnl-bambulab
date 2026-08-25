@@ -103,8 +103,27 @@ export interface PollResult {
 }
 
 export interface Store {
-  /** Accounts the cron should service, least-recently-serviced first. */
-  dueAccounts(limit: number): Promise<Account[]>;
+  /**
+   * Accounts the cron should service, least-recently-serviced first.
+   *
+   * `renderedBefore` is a cutoff in epoch milliseconds, and its direction is
+   * worth stating because it reads backwards at a glance: an account is due when
+   * its screen was rendered *before* that instant, so a **later** cutoff makes
+   * more accounts due, not fewer. The cron passes `now - DEFER_TO_RENDER_WITHIN_MS`,
+   * which advances with the clock. An account whose screen was rendered at or
+   * after the cutoff is skipped, because something fresher than this cron has
+   * already written one, and an account with no screen at all is always due.
+   *
+   * That cutoff is what lets a collector and this cron share one table without
+   * fighting over it. The collector writes often and richly, so the cron finds
+   * those rows fresh and steps aside. When the collector stops, the rows go
+   * stale, the cron resumes, and the display falls back to what HTTP can supply
+   * rather than going blank. See `docs/COLLECTOR.md`.
+   *
+   * A skipped account is still claimed, so `last_serviced_at` advances and it
+   * does not sit at the front of the queue starving everything behind it.
+   */
+  dueAccounts(limit: number, renderedBefore: number): Promise<Account[]>;
 
   accountById(id: string): Promise<Account | null>;
 

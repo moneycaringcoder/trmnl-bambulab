@@ -12,6 +12,13 @@ import { MemoryStore } from "../src/store-memory.ts";
 import type { Account } from "../src/store.ts";
 import { ownerTagForTest } from "./helpers.ts";
 
+/**
+ * A cutoff far in the future, so no account is skipped for having a fresh
+ * render. These cases are about claim ordering, not about the freshness gate,
+ * which has its own cases below.
+ */
+const ANY_RENDER = Number.MAX_SAFE_INTEGER;
+
 async function account(label: string): Promise<Omit<Account, "reauthRequired">> {
   const id = ["account", label, crypto.randomUUID()].join("-");
   const presentedScreenKey = ["screen", label, crypto.randomUUID()].join("-");
@@ -52,8 +59,8 @@ describe("MemoryStore", () => {
     await store.createAccount(third);
     await store.markReauthRequired(refused.id);
 
-    expect((await store.dueAccounts(2)).map(({ id }) => id)).toEqual([first.id, third.id]);
-    expect((await store.dueAccounts(2)).map(({ id }) => id)).toEqual([first.id, third.id]);
+    expect((await store.dueAccounts(2, ANY_RENDER)).map(({ id }) => id)).toEqual([first.id, third.id]);
+    expect((await store.dueAccounts(2, ANY_RENDER)).map(({ id }) => id)).toEqual([first.id, third.id]);
   });
 
   it("advances service order so one account cannot stay first forever", async () => {
@@ -63,9 +70,70 @@ describe("MemoryStore", () => {
     await store.createAccount(first);
     await store.createAccount(second);
 
-    expect((await store.dueAccounts(1))[0]?.id).toBe(first.id);
-    expect((await store.dueAccounts(1))[0]?.id).toBe(second.id);
-    expect((await store.dueAccounts(1))[0]?.id).toBe(first.id);
+    expect((await store.dueAccounts(1, ANY_RENDER))[0]?.id).toBe(first.id);
+    expect((await store.dueAccounts(1, ANY_RENDER))[0]?.id).toBe(second.id);
+    expect((await store.dueAccounts(1, ANY_RENDER))[0]?.id).toBe(first.id);
+  });
+
+  // The gate that lets a collector and the cron share one table. See D18.
+  it("skips an account something has rendered more recently than the cutoff", async () => {
+    const store = new MemoryStore();
+    const fresh = await account("gate-fresh");
+    const stale = await account("gate-stale");
+    await store.createAccount(fresh);
+    await store.createAccount(stale);
+
+    const cutoff = 1_000_000;
+    await store.writeScreen(fresh.id, { body: "{}", renderedAt: cutoff });
+    await store.writeScreen(stale.id, { body: "{}", renderedAt: cutoff - 1 });
+
+    // At the cutoff exactly is fresh: the boundary belongs to the writer that
+    // got there first, so the cron does not race it.
+    expect((await store.dueAccounts(5, cutoff)).map(({ id }) => id)).toEqual([stale.id]);
+  });
+
+  it("treats an account with no render at all as due", async () => {
+    const store = new MemoryStore();
+    const never = await account("gate-never");
+    await store.createAccount(never);
+
+    expect((await store.dueAccounts(5, Number.MAX_SAFE_INTEGER)).map(({ id }) => id)).toEqual([
+      never.id,
+    ]);
+  });
+
+  // A collector writing every few seconds would otherwise park its accounts at
+  // the head of the queue forever, and everything behind them would starve.
+  it("spends a skipped account's turn rather than deferring it", async () => {
+    const store = new MemoryStore();
+    const covered = await account("gate-covered");
+    const waiting = await account("gate-waiting");
+    await store.createAccount(covered);
+    await store.createAccount(waiting);
+
+    const cutoff = 2_000_000;
+    await store.writeScreen(covered.id, { body: "{}", renderedAt: cutoff });
+
+    // One slot per call, and `covered` sorts first. If its turn were deferred
+    // rather than spent, `waiting` would never come up.
+    expect((await store.dueAccounts(1, cutoff)).map(({ id }) => id)).toEqual([]);
+    expect((await store.dueAccounts(1, cutoff)).map(({ id }) => id)).toEqual([waiting.id]);
+  });
+
+  it("returns everything once the renders have gone stale", async () => {
+    const store = new MemoryStore();
+    const one = await account("gate-thaw-a");
+    const two = await account("gate-thaw-b");
+    await store.createAccount(one);
+    await store.createAccount(two);
+    await store.writeScreen(one.id, { body: "{}", renderedAt: 500 });
+    await store.writeScreen(two.id, { body: "{}", renderedAt: 500 });
+
+    // The collector stopped, so both rows aged past the cutoff and the cron
+    // takes them back rather than leaving the displays to freeze.
+    expect((await store.dueAccounts(5, 5_000)).map(({ id }) => id).sort()).toEqual(
+      [one.id, two.id].sort(),
+    );
   });
 
   it("finds an account by any owner tag candidate", async () => {
@@ -217,7 +285,7 @@ describe("MemoryStore", () => {
       token: replacement,
       reauthRequired: false,
     });
-    expect((await store.dueAccounts(1))[0]?.id).toBe(original.id);
+    expect((await store.dueAccounts(1, ANY_RENDER))[0]?.id).toBe(original.id);
   });
 
   it("returns null before a render and defensively copies a written screen", async () => {

@@ -145,7 +145,7 @@ export class NeonStore implements Store {
     this.sql = neon(databaseUrl);
   }
 
-  async dueAccounts(limit: number): Promise<Account[]> {
+  async dueAccounts(limit: number, renderedBefore: number): Promise<Account[]> {
     if (!Number.isSafeInteger(limit) || limit < 0) {
       throw new Error("due account limit must be a non-negative safe integer");
     }
@@ -166,6 +166,15 @@ export class NeonStore implements Store {
         ORDER BY last_serviced_at ASC NULLS FIRST, created_at ASC, id ASC
         FOR UPDATE SKIP LOCKED
         LIMIT ${limit}
+      ), fresh AS (
+        -- Accounts something has already rendered more recently than the cutoff.
+        -- Claimed above and then dropped here, so their turn is spent rather
+        -- than deferred: a collector writing every few seconds must not park an
+        -- account permanently at the head of the queue.
+        SELECT due.id
+        FROM due
+        JOIN screens ON screens.account_id = due.id
+        WHERE screens.rendered_at >= ${renderedBefore}
       ), claimed AS (
         UPDATE accounts AS account
         SET last_serviced_at = clock_timestamp()
@@ -199,6 +208,7 @@ export class NeonStore implements Store {
         export_job_name,
         reauth_required
       FROM claimed
+      WHERE id NOT IN (SELECT id FROM fresh)
       ORDER BY previous_last_serviced_at ASC NULLS FIRST, previous_created_at ASC, id ASC
     `;
 

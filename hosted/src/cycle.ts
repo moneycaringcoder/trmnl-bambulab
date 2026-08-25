@@ -120,6 +120,21 @@ export async function runCycle(
  */
 export const MAX_ACCOUNTS_PER_CYCLE = 15;
 
+/**
+ * How fresh a stored render has to be for this cron to leave it alone.
+ *
+ * Four minutes against a five-minute cron. The gap matters in both directions:
+ * long enough that a collector writing every few seconds keeps the cron out of
+ * the way entirely, and short enough that the cron never skips an account
+ * because of its *own* last write, which is five minutes old by the time it
+ * comes round again.
+ *
+ * With no collector running this changes nothing, because a screen the cron
+ * rendered is always older than this by the time the next tick arrives. See
+ * `docs/COLLECTOR.md`.
+ */
+export const DEFER_TO_RENDER_WITHIN_MS = 4 * 60_000;
+
 export interface DueAccountsOptions {
   now: number;
   limit?: number;
@@ -146,7 +161,7 @@ export async function runDueAccounts(
   options: DueAccountsOptions,
 ): Promise<AccountCycleSummary[]> {
   const limit = Math.min(options.limit ?? MAX_ACCOUNTS_PER_CYCLE, MAX_ACCOUNTS_PER_CYCLE);
-  const accounts = await deps.store.dueAccounts(limit);
+  const accounts = await deps.store.dueAccounts(limit, options.now - DEFER_TO_RENDER_WITHIN_MS);
   const summaries: AccountCycleSummary[] = [];
 
   for (const [index, account] of accounts.entries()) {

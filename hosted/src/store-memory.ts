@@ -47,7 +47,7 @@ export class MemoryStore implements Store {
   private createdOrder = 0;
   private servicedOrder = 0;
 
-  async dueAccounts(limit: number): Promise<Account[]> {
+  async dueAccounts(limit: number, renderedBefore: number): Promise<Account[]> {
     if (!Number.isSafeInteger(limit) || limit < 0) {
       throw new Error("due account limit must be a non-negative safe integer");
     }
@@ -76,7 +76,15 @@ export class MemoryStore implements Store {
       this.servicedOrder += 1;
       entry.lastServicedOrder = this.servicedOrder;
     }
-    return due.map((entry) => copyAccount(entry.account));
+
+    // Dropped after claiming, not before, so an account something else keeps
+    // rendering spends its turn instead of parking at the head of the queue.
+    return due
+      .filter((entry) => {
+        const screen = this.screens.get(entry.account.id);
+        return screen === undefined || screen.renderedAt < renderedBefore;
+      })
+      .map((entry) => copyAccount(entry.account));
   }
 
   async accountById(id: string): Promise<Account | null> {

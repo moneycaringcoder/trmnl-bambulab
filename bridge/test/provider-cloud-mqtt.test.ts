@@ -3,10 +3,10 @@ import {
   deviceIdFromTopic,
   reportTopic,
   watchCloudMqtt,
-} from "../src/providers/cloud-mqtt.ts";
-import type { ByteStream } from "../src/mqtt/client.ts";
-import { PACKET } from "../src/mqtt/packet.ts";
-import type { Observation } from "../src/types.ts";
+} from "@trmnl-bambulab/core/telemetry/providers/cloud-mqtt";
+import type { ByteStream } from "@trmnl-bambulab/core/telemetry/mqtt/client";
+import { PACKET } from "@trmnl-bambulab/core/telemetry/mqtt/packet";
+import type { Observation } from "@trmnl-bambulab/core/telemetry/types";
 import { DEVICE_ID, MQTT_USERNAME } from "./synthetic-values.ts";
 
 const OTHER_DEVICE = `${DEVICE_ID}B`;

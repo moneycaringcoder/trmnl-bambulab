@@ -13,12 +13,10 @@ import {
   generateKeyBase64,
   importKeyring,
   openToken,
-  newScreenKey,
   sealToken,
-  screenKeyFingerprint,
   type Keyring,
   type SealedToken,
-} from "../src/crypto.ts";
+} from "@trmnl-bambulab/core/hosted/crypto";
 
 async function freshKeyring(id = "current"): Promise<{ encoded: string; keyring: Keyring }> {
   const encoded = await generateKeyBase64();
@@ -131,36 +129,5 @@ describe("hosted token encryption", () => {
       expect(message).not.toContain(encoded);
       expect(message).not.toContain(sealed.ciphertext);
     }
-  });
-});
-
-describe("hosted screen keys", () => {
-  // The width is pinned, not just the charset. `crypto.ts` justifies hashing the
-  // key with a plain SHA-256 rather than a KDF on the grounds that it is 256
-  // random bits, so guessing is already impossible. Narrowing the key to 16 or 8
-  // bytes would keep every other assertion here green while quietly destroying
-  // the premise that argument rests on.
-  it("mints 256 bits as distinct unpadded base64url credentials", () => {
-    const keys = Array.from({ length: 128 }, () => newScreenKey());
-
-    expect(new Set(keys).size).toBe(keys.length);
-    for (const key of keys) {
-      expect(key).toMatch(/^[A-Za-z0-9_-]+$/);
-      expect(key).not.toContain("=");
-      // 32 bytes is 43 base64 characters once the single pad byte is dropped.
-      expect(key).toHaveLength(43);
-    }
-  });
-
-  it("fingerprints keys stably without retaining the credential", async () => {
-    const key = newScreenKey();
-    const otherKey = newScreenKey();
-    const fingerprint = await screenKeyFingerprint(key);
-
-    await expect(screenKeyFingerprint(key)).resolves.toBe(fingerprint);
-    await expect(screenKeyFingerprint(`  ${key}  `)).resolves.toBe(fingerprint);
-    await expect(screenKeyFingerprint(otherKey)).resolves.not.toBe(fingerprint);
-    expect(fingerprint).toMatch(/^[0-9a-f]{64}$/);
-    expect(fingerprint).not.toContain(key);
   });
 });

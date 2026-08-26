@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseBoundDevices } from "../src/providers/bambu-cloud/api.ts";
+import { parseBoundDevices } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/api";
 import { DEVICE_ID } from "./synthetic-values.ts";
 
 describe("parseBoundDevices", () => {

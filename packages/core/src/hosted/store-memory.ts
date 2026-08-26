@@ -43,9 +43,28 @@ export class MemoryStore implements Store {
   private readonly installations = new Map<string, Installation>();
   private readonly installationIdsByTokenTag = new Map<string, string>();
   private readonly accountIdsByOwnerTag = new Map<string, string>();
+  private readonly installationIdsByUserUuid = new Map<string, string>();
+  private readonly installationIdsByAccountId = new Map<string, string>();
   private readonly screens = new Map<string, Screen>();
   private createdOrder = 0;
   private servicedOrder = 0;
+
+  async collectableAccounts(limit: number): Promise<Account[]> {
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw new Error("collectable account limit must be a non-negative safe integer");
+    }
+    if (limit === 0) return [];
+
+    return [...this.accounts.values()]
+      .filter((entry) => !entry.account.reauthRequired && entry.account.deviceIds.length > 0)
+      .sort(
+        (left, right) =>
+          left.createdOrder - right.createdOrder ||
+          left.account.id.localeCompare(right.account.id),
+      )
+      .slice(0, limit)
+      .map((entry) => copyAccount(entry.account));
+  }
 
   async dueAccounts(limit: number, renderedBefore: number): Promise<Account[]> {
     if (!Number.isSafeInteger(limit) || limit < 0) {
@@ -118,10 +137,10 @@ export class MemoryStore implements Store {
   }
 
   async installationByUserUuid(uuid: string): Promise<Installation | null> {
-    for (const installation of this.installations.values()) {
-      if (installation.userUuid === uuid) return { ...installation };
-    }
-    return null;
+    const id = this.installationIdsByUserUuid.get(uuid);
+    if (id === undefined) return null;
+    const installation = this.installations.get(id);
+    return installation === undefined ? null : { ...installation };
   }
 
   async createInstallation(installation: Installation): Promise<void> {
@@ -131,8 +150,27 @@ export class MemoryStore implements Store {
     if (this.installationIdsByTokenTag.has(installation.accessTokenTag)) {
       throw new Error("that access token tag already exists");
     }
+    if (
+      installation.userUuid !== null &&
+      this.installationIdsByUserUuid.has(installation.userUuid)
+    ) {
+      throw new Error("that user uuid already belongs to an installation");
+    }
+    if (
+      installation.accountId !== null &&
+      this.installationIdsByAccountId.has(installation.accountId)
+    ) {
+      throw new Error("that account already belongs to an installation");
+    }
+
     this.installations.set(installation.id, { ...installation });
     this.installationIdsByTokenTag.set(installation.accessTokenTag, installation.id);
+    if (installation.userUuid !== null) {
+      this.installationIdsByUserUuid.set(installation.userUuid, installation.id);
+    }
+    if (installation.accountId !== null) {
+      this.installationIdsByAccountId.set(installation.accountId, installation.id);
+    }
   }
 
   async recordInstallationUser(
@@ -142,19 +180,42 @@ export class MemoryStore implements Store {
   ): Promise<void> {
     const installation = this.installations.get(id);
     if (installation === undefined) return;
+    const owner = this.installationIdsByUserUuid.get(userUuid);
+    if (owner !== undefined && owner !== id) {
+      throw new Error("that user uuid already belongs to an installation");
+    }
+    if (installation.userUuid !== null && installation.userUuid !== userUuid) {
+      this.installationIdsByUserUuid.delete(installation.userUuid);
+    }
     installation.userUuid = userUuid;
     installation.pluginSettingId = pluginSettingId;
+    this.installationIdsByUserUuid.set(userUuid, id);
   }
 
   async linkInstallationAccount(id: string, accountId: string): Promise<void> {
     const installation = this.installations.get(id);
-    if (installation !== undefined) installation.accountId = accountId;
+    if (installation === undefined) return;
+    const owner = this.installationIdsByAccountId.get(accountId);
+    if (owner !== undefined && owner !== id) {
+      throw new Error("that account already belongs to an installation");
+    }
+    if (installation.accountId !== null && installation.accountId !== accountId) {
+      this.installationIdsByAccountId.delete(installation.accountId);
+    }
+    installation.accountId = accountId;
+    this.installationIdsByAccountId.set(accountId, id);
   }
 
   async deleteInstallation(id: string): Promise<void> {
     const installation = this.installations.get(id);
     if (installation === undefined) return;
     this.installationIdsByTokenTag.delete(installation.accessTokenTag);
+    if (installation.userUuid !== null) {
+      this.installationIdsByUserUuid.delete(installation.userUuid);
+    }
+    if (installation.accountId !== null) {
+      this.installationIdsByAccountId.delete(installation.accountId);
+    }
     this.installations.delete(id);
   }
 
@@ -235,7 +296,9 @@ export class MemoryStore implements Store {
     // Mirrors the schema's ON DELETE SET NULL: the installation outlives a
     // deleted account and can enrol a fresh one.
     for (const installation of this.installations.values()) {
-      if (installation.accountId === accountId) installation.accountId = null;
+      if (installation.accountId !== accountId) continue;
+      installation.accountId = null;
+      this.installationIdsByAccountId.delete(accountId);
     }
   }
 }

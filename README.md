@@ -93,25 +93,24 @@ mashups:
 git clone https://github.com/moneycaringcoder/trmnl-bambulab
 cd trmnl-bambulab
 corepack enable
-cd bridge
 pnpm install --frozen-lockfile
-pnpm setup
+pnpm --dir bridge setup
 ```
 
-`pnpm setup` lets you paste an existing Bambu access token or sign in with
-your email and password. A password is sent to Bambu Cloud once and discarded;
-Bambu may then email you a verification code. The wizard lists the printers on
-your account and asks which ones to show. You can finish without a TRMNL
-webhook URL and add it later with `pnpm setup webhook`. `pnpm start` then runs
-the bridge until you stop it.
+`pnpm --dir bridge setup` lets you paste an existing Bambu access token or sign
+in with your email and password. A password is sent to Bambu Cloud once and
+discarded; Bambu may then email you a verification code. The wizard lists the
+printers on your account and asks which ones to show. You can finish without a
+TRMNL webhook URL and add it later with `pnpm --dir bridge setup webhook`.
+`pnpm --dir bridge start` then runs the bridge until you stop it.
 
 | Command | Does |
 |---|---|
-| `pnpm setup` | Configure from scratch |
-| `pnpm setup printers` | Change which printers show |
-| `pnpm setup reauth` | Sign in again when the token expires |
-| `pnpm setup webhook` | Set the TRMNL webhook URL |
-| `pnpm start` | Run the bridge |
+| `pnpm --dir bridge setup` | Configure from scratch |
+| `pnpm --dir bridge setup printers` | Change which printers show |
+| `pnpm --dir bridge setup reauth` | Sign in again when the token expires |
+| `pnpm --dir bridge setup webhook` | Set the TRMNL webhook URL |
+| `pnpm --dir bridge start` | Run the bridge |
 
 The password and any verification code are used only for their login requests
 and never written to disk. Only the resulting access token is stored, in a file
@@ -129,10 +128,11 @@ See the [hosted deployment guide](hosted/README.md), the
 
 | Path | What |
 |---|---|
-| `bridge/` | The self-hosted bridge: cloud providers, normalizers, coordinator, payload builder, subscribe-only MQTT client, daemon, setup CLI |
+| `bridge/` | The self-hosted daemon, push scheduler, and setup CLI |
+| `packages/core/` | Shared telemetry, subscribe-only MQTT, Bambu Cloud providers, payload building, encryption, stores, logging contracts, and screen serialization |
 | `src/` | The display itself: shared markup and the four Liquid layouts. One design source for both tiers |
-| `hosted/` | The hosted tier: Cloudflare Worker, TRMNL marketplace protocol, Neon schema, token encryption, server-side Liquid rendering |
-| `collector/` | The always-on process that holds Bambu MQTT for hosted accounts, so the hosted display shows the same numbers a self-hosted one does |
+| `hosted/` | The hosted Cloudflare Worker, TRMNL marketplace protocol, Neon migrations, and server-side Liquid rendering |
+| `collector/` | The always-on process that consumes the core package to hold Bambu MQTT for hosted accounts |
 | `docs/` | The plugin contract, the collector guide, template documentation |
 | `scripts/` | The secret scanner the pre-commit hook runs |
 

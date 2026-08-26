@@ -18,9 +18,9 @@
  * the plugin's settings page is possession of the plugin.
  */
 
-import { ownerTagCandidates, type Keyring } from "./crypto.ts";
+import { ownerTagCandidates, type Keyring } from "@trmnl-bambulab/core/hosted/crypto";
 import { renderScreenMarkup, type ScreenMarkup } from "./markup.ts";
-import type { Installation, Store } from "./store.ts";
+import type { Installation, Store } from "@trmnl-bambulab/core/hosted/store";
 
 /**
  * Domain separators, so a TRMNL access token, an installation id and an

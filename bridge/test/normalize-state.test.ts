@@ -4,7 +4,7 @@ import {
   formatRemaining,
   fromTaskStatus,
   toDisplayState,
-} from "../src/normalize/state.ts";
+} from "@trmnl-bambulab/core/telemetry/normalize/state";
 
 // The bug this pins came from a real account. `/user/bind` reports
 // `print_status: "SUCCESS"` for a printer that finished a job days ago and is

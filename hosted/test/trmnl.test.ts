@@ -9,8 +9,12 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { importKeyringFromEnv, sealToken, type Keyring } from "../src/crypto.ts";
-import { MemoryStore } from "../src/store-memory.ts";
+import {
+  importKeyringFromEnv,
+  sealToken,
+  type Keyring,
+} from "@trmnl-bambulab/core/hosted/crypto";
+import { MemoryStore } from "@trmnl-bambulab/core/hosted/store-memory";
 import {
   identifyInstallation,
   install,

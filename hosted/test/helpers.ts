@@ -7,7 +7,11 @@
  * both to a reader and to `scripts/secret-scan.sh`. So the tests contain none.
  */
 
-import { generateKeyBase64, importKeyring, type Keyring } from "../src/crypto.ts";
+import {
+  generateKeyBase64,
+  importKeyring,
+  type Keyring,
+} from "@trmnl-bambulab/core/hosted/crypto";
 
 /**
  * Stands in for a Bambu access token. Assembled from parts so no long

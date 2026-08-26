@@ -26,12 +26,49 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Scan the whole tree
         run: bash scripts/secret-scan.sh --tree
 
       - name: Test the scanner
         run: bash scripts/secret-scan.test.sh
+
+      - name: Scan complete Git history
+        run: bash scripts/secret-scan.sh --history
+
+  core:
+    name: core (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    defaults:
+      run:
+        working-directory: packages/core
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install pnpm
+        run: npm install --global pnpm@11.13.1
+        working-directory: .
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+        working-directory: .
+
+      - name: Typecheck
+        run: pnpm typecheck
 
   bridge:
     name: bridge (node ${{ matrix.node }})
@@ -55,15 +92,16 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      # Pinned exactly: the committed lockfile is produced by this line of pnpm.
+      # Pinned exactly: the root lockfile is produced by this version of pnpm.
       - name: Install pnpm
         run: npm install --global pnpm@11.13.1
         working-directory: .
 
-      # --ignore-scripts keeps dependency lifecycle scripts out of CI. Nothing
-      # in this tree needs them; vitest and tsc run without them.
-      - name: Install dependencies
+      # --ignore-scripts keeps dependency lifecycle scripts out of CI. Install
+      # the whole workspace once from its single frozen root lockfile.
+      - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
+        working-directory: .
 
       - name: Typecheck
         run: pnpm typecheck
@@ -72,9 +110,13 @@ jobs:
         run: pnpm test
 
   hosted:
-    name: hosted tier
+    name: hosted tier (node ${{ matrix.node }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
     defaults:
       run:
         working-directory: hosted
@@ -84,26 +126,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node 22
+      - name: Set up Node ${{ matrix.node }}
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: ${{ matrix.node }}
 
       - name: Install pnpm
         run: npm install --global pnpm@11.13.1
         working-directory: .
 
-      # Two installs. The hosted tier runs the bridge's modules from source —
-      # the cron's poller, the payload builder, the templates' variable shape —
-      # so typechecking it typechecks bridge files too, and those resolve `zod`
-      # from the bridge's own `node_modules`, which a hosted-only install does
-      # not create. Same lesson the collector job learned, same fix.
-      - name: Install the bridge's dependencies
+      - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
-        working-directory: bridge
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        working-directory: .
 
       - name: Typecheck
         run: pnpm typecheck
@@ -116,15 +150,19 @@ jobs:
         run: pnpm test
 
       # Proves the bundle still builds, which is how the Worker would first fail
-      # if a bridge module reached for something the Workers runtime lacks.
+      # if a shared module reached for something the Workers runtime lacks.
       # Needs no credential: --dry-run neither uploads nor authenticates.
       - name: Bundle
         run: pnpm exec wrangler deploy --dry-run
 
   collector:
-    name: collector
+    name: collector (node ${{ matrix.node }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
     defaults:
       run:
         working-directory: collector
@@ -134,33 +172,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node 22
+      - name: Set up Node ${{ matrix.node }}
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: ${{ matrix.node }}
 
       - name: Install pnpm
         run: npm install --global pnpm@11.13.1
         working-directory: .
 
-      # Three installs, not one. The collector runs the bridge's and the hosted
-      # tier's modules from source rather than copying them, so typechecking it
-      # typechecks their files too — and those resolve `zod` and
-      # `@neondatabase/serverless` from their own `node_modules`, which a
-      # collector-only install does not create. Verified by running this job's
-      # steps against a clean checkout: without these two, `pnpm typecheck` fails
-      # on both imports while the tests still pass, because vitest resolves them
-      # from the collector's tree and tsc does not.
-      - name: Install the bridge's dependencies
+      - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
-        working-directory: bridge
-
-      - name: Install the hosted tier's dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
-        working-directory: hosted
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        working-directory: .
 
       - name: Typecheck
         run: pnpm typecheck

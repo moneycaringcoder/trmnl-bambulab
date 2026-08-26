@@ -17,9 +17,9 @@ const liquidTextPlugin = {
 export default defineConfig({
   plugins: [liquidTextPlugin],
   test: {
-    include: ["test/**/*.test.ts"],
-    // Hosted tests use Web Crypto and an in-memory store. They must never reach
-    // Neon, Bambu Cloud, TRMNL, or any other network endpoint.
-    environment: "node",
+    include: ["test/**/*.test.{ts,js}"],
+    // Hosted tests use Web Crypto, an in-memory store, and a local DOM harness.
+    // They must never reach Neon, Bambu Cloud, TRMNL, or any other network
+    // endpoint.
   },
 });

@@ -35,10 +35,13 @@ import {
   beginCodeLogin,
   type AuthPhase,
   type LoginResponse,
-} from "../../bridge/src/providers/bambu-cloud/auth.ts";
-import { CloudError, request } from "../../bridge/src/providers/bambu-cloud/http.ts";
-import { listDevices } from "../../bridge/src/providers/bambu-cloud/api.ts";
-import { hostsFor, type Region } from "../../bridge/src/providers/bambu-cloud/hosts.ts";
+} from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/auth";
+import { CloudError, request } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/http";
+import { listDevices } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/api";
+import {
+  hostsFor,
+  type Region,
+} from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/hosts";
 
 /** What the picker shows. Identifiers stay here; only names reach a screen. */
 export interface DiscoveredPrinter {
@@ -50,7 +53,7 @@ export interface DiscoveredPrinter {
 }
 
 export type EnrolFailure =
-  /** Bambu refused the address or the code. Never says which, to a caller. */
+  /** Bambu refused the address, code, or saved token. */
   | { kind: "refused"; guidance: string }
   /** Bambu is unreachable, rate limiting us, or failing. Retry later. */
   | { kind: "cloud-unavailable"; guidance: string }
@@ -61,6 +64,10 @@ export type CodeRequestResult = { ok: true } | { ok: false; failure: EnrolFailur
 
 export type SignInResult =
   | { ok: true; accessToken: string; printers: DiscoveredPrinter[] }
+  | { ok: false; failure: EnrolFailure };
+
+export type PrinterListResult =
+  | { ok: true; printers: DiscoveredPrinter[] }
   | { ok: false; failure: EnrolFailure };
 
 /**
@@ -186,6 +193,36 @@ export async function discoverPrinters(
   }));
 }
 
+/**
+ * Lists printers with a stored token and classifies a refusal separately from
+ * a temporary cloud failure. The settings route uses that distinction to ask
+ * for a new code only when Bambu has actually rejected the saved token.
+ */
+export async function listStoredPrinters(
+  region: Region,
+  accessToken: string,
+): Promise<PrinterListResult> {
+  try {
+    return { ok: true, printers: await discoverPrinters(region, accessToken) };
+  } catch (error) {
+    if (error instanceof CloudError && error.category === "unauthorized-or-expired") {
+      return {
+        ok: false,
+        failure: {
+          kind: "refused",
+          guidance: "Bambu Cloud rejected the saved sign-in. Sign in again.",
+        },
+      };
+    }
+    return {
+      ok: false,
+      failure: {
+        kind: "cloud-unavailable",
+        guidance: "Bambu Cloud did not answer. Try again in a few minutes.",
+      },
+    };
+  }
+}
 
 /**
  * Narrows a chosen selection to printers the account actually has.
@@ -196,15 +233,19 @@ export async function discoverPrinters(
  * about refusing to store a selection that can never render anything.
  *
  * Order is the user's, because the first printer is the one the display leads
- * with. Duplicates collapse.
+ * with. Duplicates collapse before the maximum is enforced.
  */
 export function chooseFrom(
   available: readonly DiscoveredPrinter[],
   requested: readonly string[],
   maxPrinters: number,
-): { ok: true; deviceIds: string[] } | { ok: false; unknown: number } {
+):
+  | { ok: true; deviceIds: string[] }
+  | { ok: false; kind: "unknown"; unknown: number }
+  | { ok: false; kind: "too-many"; maxPrinters: number } {
   const known = new Set(available.map((printer) => printer.deviceId));
   const chosen: string[] = [];
+  const selected = new Set<string>();
   let unknown = 0;
 
   for (const wanted of requested) {
@@ -212,13 +253,19 @@ export function chooseFrom(
       unknown += 1;
       continue;
     }
-    if (!chosen.includes(wanted) && chosen.length < maxPrinters) chosen.push(wanted);
+    if (!selected.has(wanted)) {
+      selected.add(wanted);
+      chosen.push(wanted);
+    }
   }
 
-  // Reject rather than silently dropping. A picker that quietly ignored a
-  // printer would leave the user staring at a screen missing one, with nothing
-  // anywhere saying why.
-  if (unknown > 0) return { ok: false, unknown };
+  // Reject rather than silently dropping. The browser's visible order is the
+  // display order, and truncating it would save something other than the person
+  // reviewed. Duplicates collapse before applying the limit.
+  if (unknown > 0) return { ok: false, kind: "unknown", unknown };
+  if (chosen.length > maxPrinters) {
+    return { ok: false, kind: "too-many", maxPrinters };
+  }
   return { ok: true, deviceIds: chosen };
 }
 

@@ -14,10 +14,10 @@ import {
   type AuthTransition,
   type CloudRequest,
   type LoginResponse,
-} from "../providers/bambu-cloud/auth.ts";
-import { CloudError, request } from "../providers/bambu-cloud/http.ts";
-import type { CloudHosts } from "../providers/bambu-cloud/hosts.ts";
-import { preference } from "../providers/bambu-cloud/api.ts";
+} from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/auth";
+import { CloudError, request } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/http";
+import type { CloudHosts } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/hosts";
+import { preference } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/api";
 import { accountHintFor } from "./config.ts";
 import { SetupError } from "./errors.ts";
 import { ask, askSecret, askValid } from "./prompt.ts";

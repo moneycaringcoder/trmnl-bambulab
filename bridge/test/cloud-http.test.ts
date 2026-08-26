@@ -5,8 +5,8 @@ import {
   baseHeaders,
   categorize,
   request,
-} from "../src/providers/bambu-cloud/http.ts";
-import type { CloudHosts } from "../src/providers/bambu-cloud/hosts.ts";
+} from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/http";
+import type { CloudHosts } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/hosts";
 
 const HOSTS: CloudHosts = {
   api: "https://cloud.example.test",

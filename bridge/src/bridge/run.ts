@@ -25,14 +25,17 @@ import {
   emptyCoordinatorState,
   snapshotsFor,
   type CoordinatorState,
-} from "../coordinator/merge.ts";
-import { openTlsStream } from "../mqtt/transport-node.ts";
-import { CLOUD_MQTT_PORT, hostsFor } from "../providers/bambu-cloud/hosts.ts";
-import { preference } from "../providers/bambu-cloud/api.ts";
-import { mqttUsernameForUid, mqttUsernameFromToken } from "../providers/bambu-cloud/token.ts";
-import { healthFrom, pollCloudHttp } from "../providers/cloud-http.ts";
-import { watchCloudMqtt } from "../providers/cloud-mqtt.ts";
-import { buildWebhookPayload } from "../push/payload.ts";
+} from "@trmnl-bambulab/core/telemetry/coordinator/merge";
+import { openTlsStream } from "@trmnl-bambulab/core/telemetry/mqtt/transport-node";
+import { CLOUD_MQTT_PORT, hostsFor } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/hosts";
+import { preference } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/api";
+import {
+  mqttUsernameForUid,
+  mqttUsernameFromToken,
+} from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/token";
+import { healthFrom, pollCloudHttp } from "@trmnl-bambulab/core/telemetry/providers/cloud-http";
+import { watchCloudMqtt } from "@trmnl-bambulab/core/telemetry/providers/cloud-mqtt";
+import { buildWebhookPayload } from "@trmnl-bambulab/core/telemetry/push/payload";
 import {
   decide,
   emptySchedulerState,
@@ -42,7 +45,7 @@ import {
 import type { BridgeConfig } from "../setup/config.ts";
 import { maskIdentifier } from "../setup/mask.ts";
 import { pushPayload } from "../setup/webhook-push.ts";
-import type { Observation, ProviderStatus } from "../types.ts";
+import type { Observation, ProviderStatus } from "@trmnl-bambulab/core/telemetry/types";
 import { isRetryable, retryDelayMs } from "./backoff.ts";
 import { createLogger, type Logger } from "./log.ts";
 

@@ -16,7 +16,8 @@
   // twelve-pushes-an-hour ceiling no longer applies — the hosted tier is polled
   // rather than pushing — but the cron is now the only thing that reads Bambu,
   // and one read per account per five minutes is a rate we are comfortable
-  // defending. `FRESH_FOR_MS` in src/screen.ts is three missed cycles of this.
+  // defending. `DEFER_TO_RENDER_WITHIN_MS` in `src/cycle.ts` keeps a recent
+  // collector render from being replaced by the thinner cron result.
   "triggers": {
     "crons": ["*/5 * * * *"]
   },
@@ -27,12 +28,10 @@
   // `workers_dev` is the URL the setup page and TRMNL actually use, so it stays.
   //
   // `preview_urls` is off. It would publish a second hostname for every version
-  // ever uploaded, each one serving this Worker's whole surface: the enrolment
-  // API and `GET /v1/screen`. A screen key would work against all of them, and a
-  // stale version would keep answering with whatever code it shipped with. The
-  // rate ceilings still apply, and sign-in would fail there because those hosts
-  // are not registered as trusted origins — but none of that is a reason to
-  // publish the surface in the first place.
+  // ever uploaded, each serving the enrolment and `/trmnl/*` surfaces against
+  // the same database. Installation tokens would work against stale versions,
+  // which would keep answering with whatever code they shipped with. The rate
+  // ceilings still apply, but none of that justifies another public surface.
   "workers_dev": true,
   "preview_urls": false,
 
@@ -63,13 +62,12 @@
   // nothing while looking like it configures something.
   //
   // It is off because Cloudflare's automatic Fetch event records
-  // `<Method> <URL>` for every request, and `/v1/screen` is called on every
-  // device refresh. The screen key travels in an Authorization header rather
-  // than the query string, so a URL log would not capture it today — but an
-  // automatic per-request log on an internet-facing authenticated route is a
-  // standing invitation to leak whatever ends up in a URL later, and it is
-  // volume an anonymous caller controls on a route with no rate limit. This
-  // tier gets its observability from the scheduled handler instead.
+  // `<Method> <URL>` for every request on the enrolment and `/trmnl/*`
+  // surfaces. Credentials currently travel in headers or URL fragments rather
+  // than request URLs, but automatic per-request logging is a standing
+  // invitation to leak a future query parameter and creates volume an
+  // anonymous caller controls. Scheduled-handler logs provide the operational
+  // signal instead.
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,

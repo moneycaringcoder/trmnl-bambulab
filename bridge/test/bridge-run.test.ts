@@ -4,7 +4,10 @@ import {
   type RunDependencies,
 } from "../src/bridge/run.ts";
 import type { Logger } from "../src/bridge/log.ts";
-import type { ByteStream, SessionEnd } from "../src/mqtt/client.ts";
+import type {
+  ByteStream,
+  SessionEnd,
+} from "@trmnl-bambulab/core/telemetry/mqtt/client";
 import type { BridgeConfig } from "../src/setup/config.ts";
 
 const DEVICE_ID = `${"0".repeat(12)}A1`;

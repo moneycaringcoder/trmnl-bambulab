@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { CLOUD_MQTT_CAPABILITIES, parseReport } from "../src/normalize/cloud-mqtt.ts";
+import {
+  CLOUD_MQTT_CAPABILITIES,
+  parseReport,
+} from "@trmnl-bambulab/core/telemetry/normalize/cloud-mqtt";
 import { loadCloudFixture } from "./synthetic-values.ts";
 
 function fixture(name: string): unknown {

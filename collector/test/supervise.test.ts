@@ -11,8 +11,8 @@
 import { describe, expect, it } from "vitest";
 import type { LeaseConnection, LeaseOptions, LeaseResult } from "../src/lease.ts";
 import { EX_CONFIG, EX_LEASE_LOST, supervise, type SupervisePorts } from "../src/supervise.ts";
-import type { Account, Store } from "../../hosted/src/store.ts";
-import type { Keyring } from "../../hosted/src/crypto.ts";
+import type { Account, Store } from "@trmnl-bambulab/core/hosted/store";
+import type { Keyring } from "@trmnl-bambulab/core/hosted/crypto";
 
 const OPTIONS = {
   instance: "collector-test",
@@ -53,7 +53,7 @@ function harness(
   let onLost: ((reason: string) => void) | null = null;
 
   const store = {
-    async dueAccounts() {
+    async collectableAccounts() {
       reads += 1;
       return options.accounts ?? [];
     },
@@ -216,7 +216,7 @@ describe("holding the lease", () => {
   it("gives the lease back even when collecting throws", async () => {
     const test = harness(["held"]);
     const failing = {
-      async dueAccounts() {
+      async collectableAccounts() {
         throw new Error("the database went away");
       },
     } as unknown as Store;

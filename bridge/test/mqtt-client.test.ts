@@ -4,8 +4,8 @@ import {
   type ByteStream,
   type SessionEnd,
   type Timers,
-} from "../src/mqtt/client.ts";
-import { PACKET, SUBSCRIBE_FAILURE } from "../src/mqtt/packet.ts";
+} from "@trmnl-bambulab/core/telemetry/mqtt/client";
+import { PACKET, SUBSCRIBE_FAILURE } from "@trmnl-bambulab/core/telemetry/mqtt/packet";
 import { DEVICE_ID, MQTT_USERNAME } from "./synthetic-values.ts";
 
 const TOPIC = `device/${DEVICE_ID}/report`;
@@ -276,9 +276,13 @@ describe("a successful session", () => {
 
     const end = session.run();
     await subscribed.promise;
-    expect(timers.onceArmed()).toBe(true);
-    expect(timers.lastOnceMs()).toBe(15_000);
-    timers.fireOnce();
+    expect(timers.onceArmed()).toBe(false);
+    expect(timers.onceCalls()).toBe(1);
+    timers.fireRepeats();
+    timers.fireRepeats();
+    timers.fireRepeats();
+    expect(broker.closed).toBe(false);
+    timers.fireRepeats();
 
     expect(await end).toEqual({
       reason: "failed",
@@ -287,25 +291,33 @@ describe("a successful session", () => {
     expect(broker.closed).toBe(true);
   });
 
-  it("resets the inbound-idle deadline when a packet arrives", async () => {
+  it("resets the stable inbound-idle clock when a packet arrives", async () => {
     const timers = controllableTimers();
     const broker = new FakeBroker(
       [CONNACK_OK, SUBACK_OK, report('{"print":{"mc_percent":42}}')],
       true,
     );
-    let callsAtReport = 0;
-    const session = new MqttSession(broker, {
+    let closedAfterTwoPostReportChecks = true;
+    let session: MqttSession;
+    session = new MqttSession(broker, {
       ...CONNECT_OPTIONS,
       timers,
+      onSubscribed: () => {
+        timers.fireRepeats();
+        timers.fireRepeats();
+      },
       onReport: () => {
-        callsAtReport = timers.onceCalls();
+        timers.fireRepeats();
+        timers.fireRepeats();
+        closedAfterTwoPostReportChecks = broker.closed;
         void session.stop();
       },
     });
 
     await session.run();
-    // Handshake, initial subscribed watchdog, then the report resetting it.
-    expect(callsAtReport).toBe(3);
+    expect(closedAfterTwoPostReportChecks).toBe(false);
+    // Only the handshake deadline uses a one-shot timer. Reports allocate none.
+    expect(timers.onceCalls()).toBe(1);
   });
 });
 

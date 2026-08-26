@@ -19,12 +19,13 @@
     "scan": "../scripts/secret-scan.sh --tree"
   },
   "dependencies": {
+    "@trmnl-bambulab/core": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.11",
     "@types/node": "^22.10.5",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
-  },
-  "packageManager": "pnpm@11.13.1"
+  }
 }

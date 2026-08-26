@@ -7,6 +7,12 @@
 # believe the context was tightened.
 
 # Dependency trees and generated output are never build inputs.
+node_modules
+.pnpm-store
+coverage
+dist
+.wrangler
+_build
 **/node_modules
 **/coverage
 **/dist

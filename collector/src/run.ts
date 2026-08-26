@@ -9,16 +9,19 @@
  * is flagged so the cron stops trying too.
  */
 
-import { preference } from "../../bridge/src/providers/bambu-cloud/api.ts";
-import { hostsFor } from "../../bridge/src/providers/bambu-cloud/hosts.ts";
-import { mqttUsernameForUid } from "../../bridge/src/providers/bambu-cloud/token.ts";
-import { CloudError } from "../../bridge/src/providers/bambu-cloud/http.ts";
-import type { ByteStream } from "../../bridge/src/mqtt/client.ts";
-import type { Observation } from "../../bridge/src/types.ts";
-import type { PollOptions, PollResult } from "../../bridge/src/providers/cloud-http.ts";
-import { openToken, type Keyring } from "../../hosted/src/crypto.ts";
-import { accountTag, type LogDetail } from "../../hosted/src/log.ts";
-import type { Account, Store } from "../../hosted/src/store.ts";
+import { preference } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/api";
+import { hostsFor } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/hosts";
+import { mqttUsernameForUid } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/token";
+import { CloudError } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/http";
+import type { ByteStream } from "@trmnl-bambulab/core/telemetry/mqtt/client";
+import type { Observation } from "@trmnl-bambulab/core/telemetry/types";
+import type {
+  PollOptions,
+  PollResult,
+} from "@trmnl-bambulab/core/telemetry/providers/cloud-http";
+import { openToken, type Keyring } from "@trmnl-bambulab/core/hosted/crypto";
+import { accountTag, type LogDetail } from "@trmnl-bambulab/core/hosted/log";
+import type { Account, Store } from "@trmnl-bambulab/core/hosted/store";
 import { runAccountSession } from "./session.ts";
 
 /** Bounded, jittered, and capped well under an hour. */
@@ -49,9 +52,16 @@ export interface CollectorPorts {
    */
   stopped: Promise<void>;
   /**
+   * Reserves one cold-handshake slot and returns its idempotent release.
+   *
+   * `collectAll` supplies the bounded gate. Direct `collectAccount` callers may
+   * omit it, which keeps the account loop independently testable.
+   */
+  acquireHandshake?(): Promise<() => void>;
+  /**
    * Scalars only, deliberately.
    *
-   * `hosted/src/log.ts` restricts its detail to scalars because handing a logger
+   * The shared core log type restricts detail to scalars because handing a logger
    * an arbitrary object is how an account row or a response body reaches a log.
    * The collector runs where logs are easier to reach than Cloudflare's, so it
    * keeps the same boundary rather than relying on review.
@@ -63,6 +73,8 @@ export interface CollectorPorts {
 }
 
 export const ACCOUNT_START_STAGGER_MS = 250;
+/** At most this many accounts may open tokens and establish subscriptions together. */
+export const ACCOUNT_HANDSHAKE_CONCURRENCY = 2;
 
 export interface CollectorOptions {
   /** A ceiling, so one instance cannot take on more than it was sized for. */
@@ -76,6 +88,8 @@ export interface CollectorOptions {
    * and MQTT handshake for each newly discovered account are staggered.
    */
   accountStartStaggerMs?: number;
+  /** Explicit bound for token open, preference, baseline poll, and MQTT admission. */
+  handshakeConcurrency?: number;
 }
 
 export interface AccountCollector {
@@ -98,100 +112,191 @@ export async function collectAccount(
   let failures = 0;
 
   while (!ports.stopping()) {
-    let accessToken: string;
-    try {
-      accessToken = await openToken(ports.keyring, account.id, account.token);
-    } catch {
-      // A token this instance cannot open is a key problem, not a printer
-      // problem, and no amount of retrying changes it.
-      ports.log("error", "cannot open the stored token for an account", { account_tag: tag });
-      return;
-    }
+    const permit = ports.acquireHandshake === undefined
+      ? () => undefined
+      : await ports.acquireHandshake();
+    let permitReleased = false;
+    const releasePermit = (): void => {
+      if (permitReleased) return;
+      permitReleased = true;
+      permit();
+    };
 
-    let username: string;
     try {
-      // The MQTT username is no longer carried inside the access token, so it
-      // comes from the account endpoint. One HTTP call per session, not per
-      // report.
-      const { uid } = await preference(hostsFor(account.region), accessToken);
-      username = mqttUsernameForUid(uid);
-    } catch (cause) {
-      if (cause instanceof CloudError && cause.category === "unauthorized-or-expired") {
-        await ports.store.markReauthRequired(account.id);
-        ports.log("warn", "the cloud refused this account's token", { account_tag: tag });
+      if (ports.stopping()) return;
+
+      let accessToken: string;
+      try {
+        accessToken = await openToken(ports.keyring, account.id, account.token);
+      } catch {
+        // A token this instance cannot open is a key problem, not a printer
+        // problem, and no amount of retrying changes it.
+        ports.log("error", "cannot open the stored token for an account", { account_tag: tag });
         return;
       }
+      if (ports.stopping()) return;
+
+      let username: string;
+      try {
+        // The MQTT username is no longer carried inside the access token, so it
+        // comes from the account endpoint. One HTTP call per session, not per
+        // report.
+        const { uid } = await preference(hostsFor(account.region), accessToken);
+        username = mqttUsernameForUid(uid);
+      } catch (cause) {
+        if (cause instanceof CloudError && cause.category === "unauthorized-or-expired") {
+          await ports.store.markReauthRequired(account.id);
+          ports.log("warn", "the cloud refused this account's token", { account_tag: tag });
+          return;
+        }
+        failures += 1;
+        ports.log("warn", "could not read the account id", { account_tag: tag });
+        releasePermit();
+        if (await sleepOrStop(ports, backoffMs(failures, ports.random))) return;
+        continue;
+      }
+      if (ports.stopping()) return;
+
+      // HTTP first, every session, because MQTT does not carry a printer's name.
+      // This is the same read the cron does, and it is what makes the collector's
+      // richer render a superset of the cron's rather than a trade: names and
+      // online flags from here, metrics from the reports that follow.
+      let baseline: readonly Observation[] = [];
+      try {
+        const poll = await ports.pollCloud({
+          hosts: hostsFor(account.region),
+          accessToken,
+          deviceIds: account.deviceIds,
+          exportJobName: account.exportJobName,
+          now: ports.now(),
+        });
+        if (poll.status === "reauth_required") {
+          await ports.store.markReauthRequired(account.id);
+          ports.log("warn", "the cloud refused this account's token", { account_tag: tag });
+          return;
+        }
+        baseline = poll.observations;
+      } catch {
+        // Without a baseline the render would have no name, so this is worth a
+        // retry rather than a nameless session.
+        failures += 1;
+        ports.log("warn", "could not read the printer list", { account_tag: tag });
+        releasePermit();
+        if (await sleepOrStop(ports, backoffMs(failures, ports.random))) return;
+        continue;
+      }
+      if (ports.stopping()) return;
+
+      try {
+        const ending = await runAccountSession(account, {
+          store: ports.store,
+          connect: ports.connect,
+          username,
+          accessToken,
+          clientId: ports.clientId(),
+          now: ports.now,
+          stopped: ports.stopped,
+          baseline,
+          onSubscribed: releasePermit,
+          onRender: ({ bytes, printers }) => {
+            failures = 0;
+            ports.log("info", "stored a live render", {
+              account_tag: tag,
+              bytes,
+              printers,
+            });
+          },
+        });
+
+        if (ending.reason === "rejected") {
+          // The broker refused the credentials or the subscription. Retrying
+          // cannot help, and hammering a rejecting endpoint is what earns a ban.
+          await ports.store.markReauthRequired(account.id);
+          ports.log("error", "the broker refused this session", { account_tag: tag });
+          return;
+        }
+        ports.log("warn", "live session ended", { account_tag: tag, reason: ending.reason });
+      } catch {
+        // Reaching the broker failed. The message could name a host, so only the
+        // fact is logged.
+        ports.log("warn", "could not reach the broker", { account_tag: tag });
+      }
+
       failures += 1;
-      ports.log("warn", "could not read the account id", { account_tag: tag });
+      releasePermit();
       if (await sleepOrStop(ports, backoffMs(failures, ports.random))) return;
-      continue;
+    } finally {
+      releasePermit();
     }
-
-    // HTTP first, every session, because MQTT does not carry a printer's name.
-    // This is the same read the cron does, and it is what makes the collector's
-    // richer render a superset of the cron's rather than a trade: names and
-    // online flags from here, metrics from the reports that follow.
-    let baseline: readonly Observation[] = [];
-    try {
-      const poll = await ports.pollCloud({
-        hosts: hostsFor(account.region),
-        accessToken,
-        deviceIds: account.deviceIds,
-        exportJobName: account.exportJobName,
-        now: ports.now(),
-      });
-      if (poll.status === "reauth_required") {
-        await ports.store.markReauthRequired(account.id);
-        ports.log("warn", "the cloud refused this account's token", { account_tag: tag });
-        return;
-      }
-      baseline = poll.observations;
-    } catch {
-      // Without a baseline the render would have no name, so this is worth a
-      // retry rather than a nameless session.
-      failures += 1;
-      ports.log("warn", "could not read the printer list", { account_tag: tag });
-      if (await sleepOrStop(ports, backoffMs(failures, ports.random))) return;
-      continue;
-    }
-
-    try {
-      const ending = await runAccountSession(account, {
-        store: ports.store,
-        connect: ports.connect,
-        username,
-        accessToken,
-        clientId: ports.clientId(),
-        now: ports.now,
-        stopped: ports.stopped,
-        baseline,
-        onRender: ({ bytes, printers }) => {
-          failures = 0;
-          ports.log("info", "stored a live render", {
-            account_tag: tag,
-            bytes,
-            printers,
-          });
-        },
-      });
-
-      if (ending.reason === "rejected") {
-        // The broker refused the credentials or the subscription. Retrying
-        // cannot help, and hammering a rejecting endpoint is what earns a ban.
-        await ports.store.markReauthRequired(account.id);
-        ports.log("error", "the broker refused this session", { account_tag: tag });
-        return;
-      }
-      ports.log("warn", "live session ended", { account_tag: tag, reason: ending.reason });
-    } catch {
-      // Reaching the broker failed. The message could name a host, so only the
-      // fact is logged.
-      ports.log("warn", "could not reach the broker", { account_tag: tag });
-    }
-
-    failures += 1;
-    if (await sleepOrStop(ports, backoffMs(failures, ports.random))) return;
   }
+}
+
+interface HandshakeGate {
+  acquire(): Promise<() => void>;
+  close(): void;
+}
+
+function createHandshakeGate(limit: number): HandshakeGate {
+  let active = 0;
+  let closed = false;
+  const waiting: Array<(release: () => void) => void> = [];
+
+  const dispatch = (): void => {
+    while (!closed && active < limit && waiting.length > 0) {
+      const resolve = waiting.shift();
+      if (resolve === undefined) return;
+      active += 1;
+      let released = false;
+      resolve(() => {
+        if (released) return;
+        released = true;
+        active -= 1;
+        dispatch();
+      });
+    }
+  };
+
+  return {
+    acquire: () =>
+      new Promise<() => void>((resolve) => {
+        if (closed) {
+          resolve(() => undefined);
+          return;
+        }
+        waiting.push(resolve);
+        dispatch();
+      }),
+    close: () => {
+      if (closed) return;
+      closed = true;
+      for (const resolve of waiting.splice(0)) resolve(() => undefined);
+    },
+  };
+}
+
+export function accountConfigurationFingerprint(account: Account): string {
+  return JSON.stringify([
+    account.id,
+    account.region,
+    account.token.keyId,
+    account.token.nonce,
+    account.token.ciphertext,
+    account.deviceIds,
+    account.maxPayloadBytes,
+    account.exportJobName,
+    account.reauthRequired,
+  ]);
+}
+
+interface QueuedAccount {
+  account: Account;
+  fingerprint: string;
+}
+
+interface ManagedSession {
+  fingerprint: string;
+  stop(): void;
+  done: Promise<void>;
 }
 
 /**
@@ -207,30 +312,59 @@ export async function collectAll(
   options: CollectorOptions,
   collect: AccountCollector = collectAccount,
 ): Promise<void> {
-  const sessions = new Map<string, Promise<void>>();
-  const queuedIds = new Set<string>();
-  const admissionQueue: Account[] = [];
+  if (!Number.isSafeInteger(options.maxAccounts) || options.maxAccounts < 0) {
+    throw new Error("maximum accounts must be a non-negative safe integer");
+  }
+  const handshakeConcurrency =
+    options.handshakeConcurrency ?? ACCOUNT_HANDSHAKE_CONCURRENCY;
+  if (!Number.isSafeInteger(handshakeConcurrency) || handshakeConcurrency <= 0) {
+    throw new Error("handshake concurrency must be a positive safe integer");
+  }
+
+  const gate = createHandshakeGate(handshakeConcurrency);
+  const sessions = new Map<string, ManagedSession>();
+  const queuedById = new Map<string, QueuedAccount>();
+  const admissionQueue: QueuedAccount[] = [];
   const localStop = Promise.withResolvers<void>();
   let halting = false;
   let admission: Promise<void> | null = null;
-  const sessionPorts: CollectorPorts = {
+  const admissionPorts: CollectorPorts = {
     ...ports,
     stopping: () => halting || ports.stopping(),
     stopped: Promise.race([ports.stopped, localStop.promise]),
   };
 
-  const startSession = (account: Account): void => {
-    let running: Promise<void>;
-    running = collect(account, sessionPorts)
+  const startSession = (queued: QueuedAccount): void => {
+    const individualStop = Promise.withResolvers<void>();
+    let individuallyStopping = false;
+    let state: ManagedSession;
+    const sessionPorts: CollectorPorts = {
+      ...ports,
+      acquireHandshake: gate.acquire,
+      stopping: () => halting || individuallyStopping || ports.stopping(),
+      stopped: Promise.race([ports.stopped, localStop.promise, individualStop.promise]),
+    };
+    const done = collect(queued.account, sessionPorts)
       .catch(() => {
         // The account loop normally contains its own operational failures. A
         // truly unexpected one is isolated here so unrelated sessions survive.
         ports.log("error", "an account collection session stopped unexpectedly");
       })
       .finally(() => {
-        if (sessions.get(account.id) === running) sessions.delete(account.id);
+        if (sessions.get(queued.account.id) === state) {
+          sessions.delete(queued.account.id);
+        }
       });
-    sessions.set(account.id, running);
+    state = {
+      fingerprint: queued.fingerprint,
+      stop: () => {
+        if (individuallyStopping) return;
+        individuallyStopping = true;
+        individualStop.resolve();
+      },
+      done,
+    };
+    sessions.set(queued.account.id, state);
   };
 
   const startAdmission = (): void => {
@@ -241,7 +375,7 @@ export async function collectAll(
         if (
           !first &&
           (await waitOrStop(
-            sessionPorts,
+            admissionPorts,
             options.accountStartStaggerMs ?? ACCOUNT_START_STAGGER_MS,
           ))
         ) {
@@ -250,10 +384,11 @@ export async function collectAll(
         first = false;
         if (halting || ports.stopping()) return;
 
-        const account = admissionQueue.shift();
-        if (account === undefined) return;
-        queuedIds.delete(account.id);
-        if (!sessions.has(account.id)) startSession(account);
+        const queued = admissionQueue.shift();
+        if (queued === undefined) return;
+        if (queuedById.get(queued.account.id) !== queued) continue;
+        queuedById.delete(queued.account.id);
+        if (!sessions.has(queued.account.id)) startSession(queued);
       }
     })().finally(() => {
       admission = null;
@@ -263,23 +398,52 @@ export async function collectAll(
 
   try {
     while (!ports.stopping()) {
-      // Every account, not only the ones a cron would consider due: the cutoff
-      // that makes the cron stand aside would otherwise hide exactly the
-      // accounts this process exists to serve. `dueAccounts` rotates its window
-      // by advancing `last_serviced_at`, so only read the remaining headroom or
-      // successive rounds would grow past this instance's configured ceiling.
-      const room = options.maxAccounts - sessions.size - admissionQueue.length;
+      const discovered = await ports.store.collectableAccounts(options.maxAccounts);
       const accounts =
-        room <= 0
-          ? []
-          : await ports.store.dueAccounts(room, Number.MAX_SAFE_INTEGER);
+        discovered.length <= options.maxAccounts
+          ? discovered
+          : discovered.slice(0, options.maxAccounts);
+      const selected = new Map(
+        accounts.map((account) => [account.id, accountConfigurationFingerprint(account)]),
+      );
+
+      // Remove no-longer-selected or changed queued work before the admission
+      // loop can turn it into a live session.
+      for (let index = admissionQueue.length - 1; index >= 0; index -= 1) {
+        const queued = admissionQueue[index];
+        if (
+          queued !== undefined &&
+          selected.get(queued.account.id) !== queued.fingerprint
+        ) {
+          admissionQueue.splice(index, 1);
+          if (queuedById.get(queued.account.id) === queued) {
+            queuedById.delete(queued.account.id);
+          }
+        }
+      }
+
+      // Every live session owns a stop promise. A changed or evicted session is
+      // closed and fully awaited before its replacement is admitted, preventing
+      // two MQTT connections from overlapping on one account.
+      const closing: Promise<void>[] = [];
+      for (const [id, session] of sessions) {
+        if (selected.get(id) === session.fingerprint) continue;
+        session.stop();
+        closing.push(session.done);
+      }
+      await Promise.allSettled(closing);
+
       for (const account of accounts) {
-        if (sessions.has(account.id) || queuedIds.has(account.id)) continue;
-        queuedIds.add(account.id);
-        admissionQueue.push(account);
+        const fingerprint = selected.get(account.id);
+        if (fingerprint === undefined) continue;
+        if (sessions.get(account.id)?.fingerprint === fingerprint) continue;
+        if (queuedById.get(account.id)?.fingerprint === fingerprint) continue;
+        const queued = { account, fingerprint };
+        queuedById.set(account.id, queued);
+        admissionQueue.push(queued);
       }
       startAdmission();
-      ports.log("info", "discovered accounts", {
+      ports.log("info", "reconciled collectable accounts", {
         accounts: accounts.length,
         active: sessions.size,
         queued: admissionQueue.length,
@@ -293,11 +457,13 @@ export async function collectAll(
     // the process already supplied and is harmless.
     halting = true;
     localStop.resolve();
+    gate.close();
     admissionQueue.length = 0;
-    queuedIds.clear();
+    queuedById.clear();
     const closing = sessions.size;
+    for (const session of sessions.values()) session.stop();
     await admission;
-    await Promise.allSettled([...sessions.values()]);
+    await Promise.allSettled([...sessions.values()].map(({ done }) => done));
     ports.log("info", "finished collecting", { accounts: closing });
   }
 }

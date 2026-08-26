@@ -105,6 +105,15 @@ export interface Installation {
 
 export interface Store {
   /**
+   * Accounts eligible for a held collector session, in a stable bounded order.
+   *
+   * Unlike `dueAccounts`, this is a read-only snapshot: it never claims rows or
+   * advances `last_serviced_at`. Accounts which require reauthentication or
+   * have no selected printers are not collectable.
+   */
+  collectableAccounts(limit: number): Promise<Account[]>;
+
+  /**
    * Accounts the cron should service, least-recently-serviced first.
    *
    * `renderedBefore` is a cutoff in epoch milliseconds, and its direction is

@@ -1,13 +1,9 @@
-# Weekly dependency updates, grouped so routine bumps arrive as one PR per
-# package tree instead of ten. Security updates ignore the schedule and open
-# immediately.
+# Weekly dependency updates, grouped so routine workspace bumps arrive as one
+# PR instead of ten. Security updates ignore the schedule and open immediately.
 version: 2
 updates:
   - package-ecosystem: npm
-    directories:
-      - "/bridge"
-      - "/hosted"
-      - "/collector"
+    directory: "/"
     schedule:
       interval: weekly
       day: monday

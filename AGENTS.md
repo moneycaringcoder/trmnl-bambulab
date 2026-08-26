@@ -88,16 +88,17 @@ Before every commit, every package you touched must typecheck and pass its
 tests, and the tree must scan clean:
 
 ```sh
+pnpm --dir packages/core typecheck
 pnpm --dir bridge typecheck && pnpm --dir bridge test
 pnpm --dir hosted typecheck && pnpm --dir hosted test
 pnpm --dir collector typecheck && pnpm --dir collector test
 scripts/secret-scan.sh --tree
 ```
 
-The three packages are separate installs with no workspace root, so each one
-needs its own invocation. `hosted` and `collector` run `bridge/src` modules
-from source, which means a change under `bridge/src` can break either of them
-without breaking `bridge`. Run all three when you touch shared code.
+The repository is one pnpm workspace with one root lockfile. Shared runtime code
+lives in `packages/core` and applications import it through
+`@trmnl-bambulab/core`; no application reaches into a sibling source tree. Run
+all application gates when shared code changes.
 
 Template changes additionally need `trmnlp lint` clean and all four layouts
 rendered and looked at — `docs/PLUGIN.md` has the commands.

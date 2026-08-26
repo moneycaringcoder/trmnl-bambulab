@@ -3,7 +3,7 @@ import {
   CLOUD_HTTP_CAPABILITIES,
   parseBindReport,
   parseCurrentPrint,
-} from "../src/normalize/cloud-http.ts";
+} from "@trmnl-bambulab/core/telemetry/normalize/cloud-http";
 import { DEVICE_ID, loadCloudFixture } from "./synthetic-values.ts";
 
 function fixture(name: string): unknown {

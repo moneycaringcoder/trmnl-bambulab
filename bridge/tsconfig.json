@@ -7,7 +7,7 @@
     "module": "NodeNext",
     "types": ["node"],
     "moduleResolution": "NodeNext",
-    "rootDir": "src",
+    "rootDir": "..",
     "outDir": "dist",
     "strict": true,
     "noUncheckedIndexedAccess": true,

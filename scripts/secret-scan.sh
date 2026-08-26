@@ -7,6 +7,7 @@
 # Usage:
 #   scripts/secret-scan.sh              scan the staged diff (pre-commit default)
 #   scripts/secret-scan.sh --tree       scan every tracked and untracked file
+#   scripts/secret-scan.sh --history    scan every Git blob and commit message
 #   scripts/secret-scan.sh PATH...      scan the given paths
 #
 # Exit codes: 0 clean, 1 blocked, 2 usage or environment error.
@@ -26,6 +27,7 @@ mode="staged"
 declare -a explicit_paths=()
 case "${1-}" in
   --tree) mode="tree" ;;
+  --history) mode="history" ;;
   --staged|"") mode="staged" ;;
   -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
   *) mode="paths"; explicit_paths=("$@") ;;
@@ -88,6 +90,63 @@ rules=(
 findings=0
 warnings=0
 
+history_allowlist="$repo_root/scripts/secret-scan-history.allow"
+
+is_history_allowed() {
+  local display_path="$1"
+  local line="$2"
+  local rule_id="$3"
+  [ "$mode" = "history" ] || return 1
+  [ -f "$history_allowlist" ] || return 1
+  local object
+  case "$display_path" in
+    *@*) object="${display_path##*@}" ;;
+    commit:*) object="${display_path#commit:}" ;;
+    *) return 1 ;;
+  esac
+  grep -Fqx "$object:$line:$rule_id" "$history_allowlist"
+}
+
+scan_source() {
+  local path="$1"
+  local source="$2"
+  local display_path="${3:-$path}"
+
+  local exempt=0
+  is_exempt "$path" && exempt=1
+  local rule id severity desc pattern hits
+  local -a grep_options
+  for rule in "${rules[@]}"; do
+    IFS='|' read -r id severity desc pattern <<<"$rule"
+    # Historical URL warnings repeat once per old blob and hide the credential
+    # signal this mode exists for. Blockers remain identical in every mode.
+    if [ "$mode" = "history" ] && [ "$severity" = "warning" ]; then continue; fi
+    # Exempt enforcement files skip shape-based rules because they necessarily
+    # contain those patterns. Credential material remains forbidden everywhere.
+    case "$id" in
+      jwt|private-key|bearer|postgres-url|key-assign) : ;;
+      *) [ "$exempt" = 1 ] && continue ;;
+    esac
+    grep_options=(-anE)
+    case "$id" in
+      token-assign|password-assign) grep_options=(-aniE) ;;
+    esac
+    hits=$(grep "${grep_options[@]}" "$pattern" -- "$source" 2>/dev/null | grep -avE 'secret-scan-allow')
+    [ -n "$hits" ] || continue
+    while IFS= read -r hit; do
+      local line="${hit%%:*}"
+      if is_history_allowed "$display_path" "$line" "$id"; then continue; fi
+      if [ "$severity" = blocker ]; then
+        findings=$((findings + 1))
+        printf '%sBLOCKER%s %s:%s  [%s] %s\n' "$RED" "$OFF" "$display_path" "$line" "$id" "$desc"
+      else
+        warnings=$((warnings + 1))
+        printf '%sWARNING%s %s:%s  [%s] %s\n' "$YEL" "$OFF" "$display_path" "$line" "$id" "$desc"
+      fi
+    done <<<"$hits"
+  done
+}
+
 scan_file() {
   local path="$1"
   local source="$path"
@@ -105,63 +164,74 @@ scan_file() {
   elif [ ! -f "$source" ]; then
     return 0
   fi
-  # Skip binaries.
-  if ! grep -Iq . "$source" 2>/dev/null; then
-    [ -z "$staged_blob" ] || rm -f "$staged_blob"
-    return 0
-  fi
-  local exempt=0
-  is_exempt "$path" && exempt=1
-  local rule id severity desc pattern hits
-  local -a grep_options
-  for rule in "${rules[@]}"; do
-    IFS='|' read -r id severity desc pattern <<<"$rule"
-    # Exempt enforcement files skip shape-based rules because they necessarily
-    # contain those patterns. Credential material remains forbidden everywhere.
-    case "$id" in
-      jwt|private-key|bearer|postgres-url|key-assign) : ;;
-      *) [ "$exempt" = 1 ] && continue ;;
-    esac
-    grep_options=(-nE)
-    case "$id" in
-      token-assign|password-assign) grep_options=(-niE) ;;
-    esac
-    hits=$(grep "${grep_options[@]}" "$pattern" -- "$source" 2>/dev/null | grep -vE 'secret-scan-allow' | head -5)
-    [ -n "$hits" ] || continue
-    while IFS= read -r hit; do
-      local line="${hit%%:*}"
-      if [ "$severity" = blocker ]; then
-        findings=$((findings + 1))
-        printf '%sBLOCKER%s %s:%s  [%s] %s\n' "$RED" "$OFF" "$path" "$line" "$id" "$desc"
-      else
-        warnings=$((warnings + 1))
-        printf '%sWARNING%s %s:%s  [%s] %s\n' "$YEL" "$OFF" "$path" "$line" "$id" "$desc"
-      fi
-    done <<<"$hits"
-  done
+  scan_source "$path" "$source"
   [ -z "$staged_blob" ] || rm -f "$staged_blob"
 }
 
 # Files that must never be committed at all, regardless of content.
 forbidden_paths='(^|/)(\.env($|\.)|\.dev\.vars|\.trmnlp\.yml$|captures/|raw-telemetry/|bridge/spikes/)|\.(pcap|pcapng|pem|p12|key)$'
 
-while IFS= read -r path; do
-  [ -n "$path" ] || continue
+check_forbidden_path() {
+  local path="$1"
+  local display_path="${2:-$path}"
   # A directory can be forbidden while still carrying a committed README that
-  # explains why it is forbidden. The blank `.dev.vars.example` is the safe
-  # template Wrangler users copy; the real `.dev.vars` remains forbidden.
+  # explains why it is forbidden. Blank examples remain safe templates.
   case "$path" in
-    */README.md|*/.gitkeep|.dev.vars.example|*/.dev.vars.example) : ;;
-    *)
-  if printf '%s' "$path" | grep -qE "$forbidden_paths"; then
-    findings=$((findings + 1))
-    printf '%sBLOCKER%s %s  [forbidden-path] this path must never be committed\n' "$RED" "$OFF" "$path"
-    continue
-  fi
-      ;;
+    */README.md|*/.gitkeep|.dev.vars.example|*/.dev.vars.example) return 0 ;;
   esac
-  scan_file "$path"
-done < <(collect_paths)
+  if ! printf '%s' "$path" | grep -qE "$forbidden_paths"; then return 0; fi
+  findings=$((findings + 1))
+  printf '%sBLOCKER%s %s  [forbidden-path] this path must never be committed\n' "$RED" "$OFF" "$display_path"
+  return 1
+}
+
+scan_history() {
+  local buffer object path commit entry metadata occurrence
+  local -A scanned_blobs=()
+  local -A checked_paths=()
+  buffer=$(mktemp) || {
+    echo "secret-scan: could not create a history-blob buffer" >&2
+    exit 2
+  }
+
+  # Path policy applies to every reachable tree occurrence. Content work is
+  # de-duplicated only after that check, because one immutable blob may have
+  # appeared under both allowed and forbidden paths.
+  while IFS= read -r commit; do
+    while IFS= read -r -d '' entry; do
+      metadata="${entry%%$'\t'*}"
+      path="${entry#*$'\t'}"
+      object="${metadata##* }"
+      occurrence="$object"$'\t'"$path"
+      if [ -z "${checked_paths[$occurrence]+x}" ]; then
+        check_forbidden_path "$path" "$path@$object" || true
+        checked_paths["$occurrence"]=1
+      fi
+      if [ -n "${scanned_blobs[$object]+x}" ]; then continue; fi
+      if git cat-file blob "$object" >"$buffer" 2>/dev/null; then
+        scan_source "$path" "$buffer" "$path@$object"
+        scanned_blobs["$object"]=1
+      fi
+    done < <(git ls-tree -rz "$commit")
+  done < <(git rev-list --all)
+
+  while IFS= read -r commit; do
+    git show -s --format=%B "$commit" >"$buffer"
+    scan_source ".git/COMMIT_EDITMSG" "$buffer" "commit:$commit"
+  done < <(git rev-list --all)
+
+  rm -f "$buffer"
+}
+
+if [ "$mode" = "history" ]; then
+  scan_history
+else
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    check_forbidden_path "$path" || continue
+    scan_file "$path"
+  done < <(collect_paths)
+fi
 
 echo
 if [ "$findings" -gt 0 ]; then

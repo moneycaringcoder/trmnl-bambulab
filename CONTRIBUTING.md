@@ -15,12 +15,13 @@ public issue.
 
 | Path | Contents |
 | --- | --- |
-| `bridge/` | The bridge: cloud providers, normalizers, coordinator, payload builder, subscribe-only MQTT client, push scheduler, daemon, and setup CLI. |
+| `bridge/` | The self-hosted daemon, push scheduler, setup CLI, fixtures, and bridge-focused tests. |
 | `bridge/fixtures/` | Sanitized and synthetic fixtures, split into `cloud/` and `merged/`. |
 | `bridge/test/` | Vitest suites, driven by those fixtures. |
+| `packages/core/` | The private workspace package that owns shared telemetry, Bambu Cloud, MQTT, payload, encryption, store, logging-contract, and screen-serialization modules. |
 | `src/` | Shared Liquid markup for all four viewport layouts. TRMNL renders it for the self-hosted Private Plugin; the hosted Worker renders it with liquidjs for marketplace markup responses. |
-| `hosted/` | The hosted tier: TRMNL install and management routes, server-side markup rendering, Neon schema and store, token encryption, and the Cloudflare Worker cron. |
-| `collector/` | The optional collector: one MQTT session per hosted account, a single-holder Postgres lease, and the container that supplies rich telemetry. It imports `bridge/src` and `hosted/src` rather than reimplementing either. |
+| `hosted/` | The hosted Cloudflare Worker, TRMNL install and management routes, server-side markup rendering, and Neon migrations. |
+| `collector/` | The optional collector: one MQTT session per hosted account, a single-holder Postgres lease, and the container that supplies rich telemetry through `@trmnl-bambulab/core`. |
 | `docs/` | Architecture, plugin contracts, and deployment and operations guides. |
 | `scripts/` | The secret scanner. |
 | `examples/` | Configuration examples. Never real values. |
@@ -31,23 +32,21 @@ boundaries in their shortest form and applies to humans as much as to agents.
 
 ## Getting set up
 
-From the repository root, enable Corepack and the secret hook before installing
-dependencies:
+From the repository root, enable Corepack and the secret hook, then install the
+single pnpm workspace:
 
 ```sh
 corepack enable
 git config core.hooksPath .githooks
-pnpm --dir bridge install --frozen-lockfile
-pnpm --dir hosted install --frozen-lockfile
-pnpm --dir collector install --frozen-lockfile
+pnpm install --frozen-lockfile
 ```
 
 A fresh clone does not enable repository hooks automatically. Until the hook
 path is configured, nothing stops a commit that leaks a printer identifier, and
 a leak is permanent once pushed.
 
-Node 22.18 or newer is required. Each package pins pnpm 11.13.1 through its
-`packageManager` field and has its own committed lockfile.
+Node 22.18 or newer is required. The root `package.json` pins pnpm 11.13.1, and
+the root `pnpm-lock.yaml` covers every workspace package.
 
 ## The secret gate
 
@@ -218,10 +217,11 @@ Commits follow Conventional Commits, matching the existing history: `docs:`,
 lower-case subject, no trailing period. Explain the reasoning in the body when
 it is not obvious from the diff.
 
-Before opening a pull request, run all three packages and the tree scan from the
-repository root:
+Before opening a pull request, run the shared package, all three applications,
+and the tree scan from the repository root:
 
 ```sh
+pnpm --dir packages/core typecheck
 pnpm --dir bridge typecheck && pnpm --dir bridge test
 pnpm --dir hosted typecheck && pnpm --dir hosted test
 pnpm --dir collector typecheck && pnpm --dir collector test

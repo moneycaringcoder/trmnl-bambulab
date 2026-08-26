@@ -8,8 +8,8 @@ import {
   SUBSCRIBE_FAILURE,
   encodeConnect,
   encodeSubscribe,
-} from "../src/mqtt/packet.ts";
-import * as packetModule from "../src/mqtt/packet.ts";
+} from "@trmnl-bambulab/core/telemetry/mqtt/packet";
+import * as packetModule from "@trmnl-bambulab/core/telemetry/mqtt/packet";
 import { DEVICE_ID, MQTT_USERNAME } from "./synthetic-values.ts";
 
 const REPORT_TOPIC = `device/${DEVICE_ID}/report`;

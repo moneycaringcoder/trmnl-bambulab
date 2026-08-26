@@ -28,11 +28,21 @@
  * all that is stored. No response body here contains one.
  */
 
-import { newAccountId, sealToken, type Keyring } from "./crypto.ts";
-import { chooseFrom, type DiscoveredPrinter, type EnrolFailure } from "./enrol.ts";
+import { newAccountId, sealToken, type Keyring } from "@trmnl-bambulab/core/hosted/crypto";
+import {
+  chooseFrom,
+  type DiscoveredPrinter,
+  type EnrolFailure,
+  type PrinterListResult,
+} from "./enrol.ts";
 import type { RateLimiter } from "./limits.ts";
 import { installationOwnerTags, verifyManageToken } from "./trmnl.ts";
-import type { Account, Installation, Region, Store } from "./store.ts";
+import type {
+  Account,
+  Installation,
+  Region,
+  Store,
+} from "@trmnl-bambulab/core/hosted/store";
 
 /**
  * The ceiling on printers per account.
@@ -62,14 +72,12 @@ export interface EnrolPorts {
   requestSignInCode(region: Region, email: string): Promise<CodeOutcome>;
   completeSignIn(region: Region, email: string, code: string): Promise<SignInOutcome>;
   /**
-   * Re-lists the printers on a stored account, for validating a selection.
+   * Re-lists the printers on a stored account through its sealed cloud token.
    *
-   * A port rather than a parameter, because the alternative is to trust the
-   * browser's own list of what is available, and a browser is exactly the thing
-   * whose claims this check exists to test. The Worker supplies this by opening
-   * the sealed token and asking Bambu.
+   * A result distinguishes a refused token from a temporary outage, because
+   * the browser must ask for a fresh code only for the former.
    */
-  printersFor(account: Account): Promise<DiscoveredPrinter[]>;
+  printersFor(account: Account): Promise<PrinterListResult>;
   now: number;
 }
 
@@ -89,6 +97,7 @@ export type RouteResult =
   | { kind: "done" }
   | { kind: "printers"; printers: PublicPrinter[] }
   | { kind: "account"; deviceIds: string[]; reauthRequired: boolean }
+  | { kind: "reauth-required"; guidance: string }
   /** No installation, or the token expired. Indistinguishable outside. */
   | { kind: "unauthenticated" }
   | { kind: "no-account" }
@@ -220,10 +229,9 @@ export async function postSignInCode(
  * Exchanges the emailed code for a token and lists printers.
  *
  * Creates the account if this identity has none, and replaces the token if it
- * does, which is also how a re-authentication works after a token expires. The
- * account is created with a screen key nobody has been told, because the column
- * cannot be empty and the key the user keeps is the one issued once printers are
- * chosen.
+ * does, which is also how re-authentication works after a token expires. A new
+ * account receives a sealed placeholder only to satisfy the storage invariant;
+ * the successful cloud token replaces it before this route returns.
  */
 export async function postSession(
   ports: EnrolPorts,
@@ -314,30 +322,76 @@ export async function postPrinters(
   // Asked of Bambu, not read from the request. The browser names its choice and
   // this decides whether that choice exists, which is only meaningful if the
   // two come from different places.
-  let available: DiscoveredPrinter[];
-  try {
-    available = await ports.printersFor(account);
-  } catch {
-    return {
-      kind: "upstream",
-      failure: {
-        kind: "cloud-unavailable",
-        guidance: "Bambu Cloud did not answer. Try again in a few minutes.",
-      },
-    };
-  }
+  const listed = await listForAccount(ports, account);
+  if (!listed.ok) return listed.result;
+  const available = listed.printers;
 
   const chosen = chooseFrom(available, requested, MAX_PRINTERS);
   if (!chosen.ok) {
     return {
       kind: "invalid",
-      guidance: "One of those printers is no longer on your Bambu account. Sign in again.",
+      guidance:
+        chosen.kind === "too-many"
+          ? `Choose no more than ${chosen.maxPrinters} printers.`
+          : "One of those printers is no longer on your Bambu account. " +
+            "Review the list and choose again.",
     };
   }
 
   await ports.store.replacePrinters(account.id, chosen.deviceIds);
   await ports.store.linkInstallationAccount(session.installation.id, account.id);
   return { kind: "done" };
+}
+
+/** Lists the printers visible through the saved cloud token. */
+export async function getPrinters(
+  ports: EnrolPorts,
+  authorization: string | null,
+): Promise<RouteResult> {
+  const session = await identify(ports, authorization);
+  if (session === null) return { kind: "unauthenticated" };
+  if (session.account === null) return { kind: "no-account" };
+  if (!(await permitted(ports, session.tags[0] ?? ""))) return { kind: "throttled" };
+
+  const listed = await listForAccount(ports, session.account);
+  if (!listed.ok) return listed.result;
+  return { kind: "printers", printers: listed.printers.map(publicPrinter) };
+}
+
+async function listForAccount(
+  ports: EnrolPorts,
+  account: Account,
+): Promise<
+  | { ok: true; printers: DiscoveredPrinter[] }
+  | { ok: false; result: RouteResult }
+> {
+  let outcome: PrinterListResult;
+  try {
+    outcome = await ports.printersFor(account);
+  } catch {
+    return {
+      ok: false,
+      result: {
+        kind: "upstream",
+        failure: {
+          kind: "cloud-unavailable",
+          guidance: "Bambu Cloud did not answer. Try again in a few minutes.",
+        },
+      },
+    };
+  }
+  if (outcome.ok) return { ok: true, printers: outcome.printers };
+  if (outcome.failure.kind === "refused") {
+    await ports.store.markReauthRequired(account.id);
+    return {
+      ok: false,
+      result: {
+        kind: "reauth-required",
+        guidance: "Your saved Bambu sign-in expired. Sign in again.",
+      },
+    };
+  }
+  return { ok: false, result: { kind: "upstream", failure: outcome.failure } };
 }
 
 /**

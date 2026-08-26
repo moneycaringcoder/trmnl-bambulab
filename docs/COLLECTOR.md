@@ -94,23 +94,22 @@ Consequences, none of them optional:
   asserts none appears. The collector must not add one, for any reason,
   including `pushall`.
 
-## Reuse
+## Shared core
 
-The hosted modules run in plain Node without modification.
+The collector and Worker consume the same private workspace package.
 `@neondatabase/serverless` uses HTTP, and `crypto.subtle` is a global in modern
-Node, so `hosted/src/store-neon.ts` and `hosted/src/crypto.ts` do not require a
-Workers runtime.
+Node, so the shared store and keyring modules do not require a Workers runtime.
 
-The collector is therefore an entrypoint over parts that already exist:
+The collector is therefore an entrypoint over `@trmnl-bambulab/core`:
 
-| Part | Where it already lives |
+| Part | Core source |
 | --- | --- |
-| Read accounts, write screens | `hosted/src/store-neon.ts` |
-| Open a sealed token | `hosted/src/crypto.ts` |
-| Subscribe-only MQTT client | `bridge/src/mqtt/` |
-| Normalize MQTT reports | `bridge/src/normalize/` |
-| Merge HTTP and MQTT views | `bridge/src/coordinator/` |
-| Build the payload | `bridge/src/push/payload.ts` |
+| Read accounts, write screens | `packages/core/src/hosted/store-neon.ts` |
+| Open a sealed token | `packages/core/src/hosted/crypto.ts` |
+| Subscribe-only MQTT client | `packages/core/src/telemetry/mqtt/` |
+| Normalize MQTT reports | `packages/core/src/telemetry/normalize/` |
+| Merge HTTP and MQTT views | `packages/core/src/telemetry/coordinator/` |
+| Build the payload | `packages/core/src/telemetry/push/payload.ts` |
 
 The collector adds only the loop that holds one MQTT session per account and
 the leader lock that prevents two collectors from holding one.
@@ -151,7 +150,8 @@ the stored variables into HTML, and TRMNL turns that markup into an e-paper imag
 ## Deployment and operations
 
 Build from the repository root. The root is the build context because the
-collector imports the existing bridge and hosted modules directly:
+Dockerfile installs the root workspace lockfile and copies the collector plus
+its declared core package dependency:
 
 ```sh
 docker build -f collector/Dockerfile -t trmnl-bambulab-collector .

@@ -10,9 +10,17 @@
  * TRMNL Private Plugin yet and should not be blocked by it.
  */
 
-import { hostsFor, REGIONS, type CloudHosts, type Region } from "../providers/bambu-cloud/hosts.ts";
-import { listDevices, type CloudDevice } from "../providers/bambu-cloud/api.ts";
-import { tokenState } from "../providers/bambu-cloud/token.ts";
+import {
+  hostsFor,
+  REGIONS,
+  type CloudHosts,
+  type Region,
+} from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/hosts";
+import {
+  listDevices,
+  type CloudDevice,
+} from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/api";
+import { tokenState } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/token";
 import {
   DEFAULT_MAX_PAYLOAD_BYTES,
   DEFAULT_MAX_PUSHES_PER_HOUR,

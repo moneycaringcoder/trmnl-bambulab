@@ -128,15 +128,20 @@ function parseInstallation(value: unknown): ParseResult<Installation> {
   if (userUuid !== null && (typeof userUuid !== "string" || userUuid.length === 0)) {
     return drift("user_uuid", "null or a non-empty string");
   }
-  // Postgres bigint arrives as a string through the HTTP driver; both shapes
-  // are accepted rather than trusting driver configuration.
+  // Postgres bigint arrives as a string through the HTTP driver. Converting an
+  // out-of-range bigint would silently round it, so accept only values which
+  // remain safe integers in JavaScript.
   const rawSettingId = value.plugin_setting_id;
   let pluginSettingId: number | null;
   if (rawSettingId === null) pluginSettingId = null;
   else if (Number.isSafeInteger(rawSettingId)) pluginSettingId = rawSettingId as number;
   else if (typeof rawSettingId === "string" && /^\d+$/.test(rawSettingId)) {
-    pluginSettingId = Number(rawSettingId);
-  } else return drift("plugin_setting_id", "null or an integer");
+    const converted = Number(rawSettingId);
+    if (!Number.isSafeInteger(converted)) {
+      return drift("plugin_setting_id", "null or a safe integer");
+    }
+    pluginSettingId = converted;
+  } else return drift("plugin_setting_id", "null or a safe integer");
   const accountId = value.account_id;
   if (accountId !== null && (typeof accountId !== "string" || accountId.length === 0)) {
     return drift("account_id", "null or a non-empty string");
@@ -171,8 +176,41 @@ function rowsFrom(result: unknown): unknown[] {
 export class NeonStore implements Store {
   private readonly sql: NeonQueryFunction<false, false>;
 
-  constructor(databaseUrl: string) {
-    this.sql = neon(databaseUrl);
+  constructor(databaseUrl: string, sql?: NeonQueryFunction<false, false>) {
+    this.sql = sql ?? neon(databaseUrl);
+  }
+
+  async collectableAccounts(limit: number): Promise<Account[]> {
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw new Error("collectable account limit must be a non-negative safe integer");
+    }
+    if (limit === 0) return [];
+
+    const result: unknown = await this.sql`
+      SELECT
+        id,
+        owner_tag,
+        region,
+        token_key_id,
+        token_nonce,
+        token_ciphertext,
+        device_ids,
+        max_payload_bytes,
+        export_job_name,
+        reauth_required
+      FROM accounts
+      WHERE reauth_required = false
+        AND cardinality(device_ids) > 0
+      ORDER BY created_at ASC, id ASC
+      LIMIT ${limit}
+    `;
+
+    const accounts: Account[] = [];
+    for (const row of rowsFrom(result)) {
+      const parsed = parseAccount(row);
+      if (parsed.ok) accounts.push(parsed.value);
+    }
+    return accounts;
   }
 
   async dueAccounts(limit: number, renderedBefore: number): Promise<Account[]> {

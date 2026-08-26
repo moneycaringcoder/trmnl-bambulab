@@ -7,8 +7,8 @@
  * exactly as it was.
  */
 
-import { hostsFor } from "../providers/bambu-cloud/hosts.ts";
-import { tokenState } from "../providers/bambu-cloud/token.ts";
+import { hostsFor } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/hosts";
+import { tokenState } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/token";
 import { interactiveLogin, pasteToken, verifyToken, type CloudSession } from "./cloud-session.ts";
 import { patchEnv } from "./config.ts";
 import { SetupError } from "./errors.ts";

@@ -15,6 +15,7 @@ _build/
 
 # JavaScript / TypeScript
 node_modules/
+.pnpm-store/
 coverage/
 dist/
 .wrangler/

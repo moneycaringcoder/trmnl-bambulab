@@ -1,6 +1,6 @@
 # Node 22.18 is the first release covered by the package's engine constraint.
 # The digest pins the official multi-platform image rather than one architecture.
-FROM node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e AS dependencies
+FROM node:26.6.0-bookworm-slim@sha256:81502e860176e63695d769d3d1a2d3a403abc1c27c6a02169b765f3e43b60ede AS dependencies
 
 # Corepack is included with Node 22. Invoke an exact pnpm version below, so both
 # the installer and the frozen root lockfile determine what enters the image.
@@ -16,7 +16,7 @@ COPY --chown=node:node collector/package.json ./collector/package.json
 COPY --chown=node:node packages/core/package.json ./packages/core/package.json
 RUN corepack pnpm@11.13.1 install --prod --frozen-lockfile --filter trmnl-bambulab-collector...
 
-FROM node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e
+FROM node:26.6.0-bookworm-slim@sha256:81502e860176e63695d769d3d1a2d3a403abc1c27c6a02169b765f3e43b60ede
 
 ENV NODE_ENV=production
 

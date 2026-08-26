@@ -16,7 +16,7 @@
  */
 
 import { z } from "zod";
-import type { Region } from "../providers/bambu-cloud/hosts.ts";
+import type { Region } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/hosts";
 import { maskEmail, maskIdentifier, maskSecret, maskWebhookUrl } from "./mask.ts";
 import { validateWebhookUrl } from "./webhook-url.ts";
 

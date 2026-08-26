@@ -9,11 +9,12 @@
  */
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { importKeyring, openToken, type Keyring } from "../src/crypto.ts";
+import { importKeyring, openToken, type Keyring } from "@trmnl-bambulab/core/hosted/crypto";
 import type { DiscoveredPrinter } from "../src/enrol.ts";
 import {
   deleteAccount,
   getAccount,
+  getPrinters,
   postPrinters,
   postSession,
   postSignInCode,
@@ -29,8 +30,8 @@ import {
   MANAGE_TOKEN_TTL_MS,
   type TrmnlPorts,
 } from "../src/trmnl.ts";
-import { MemoryStore } from "../src/store-memory.ts";
-import type { Account, Region } from "../src/store.ts";
+import { MemoryStore } from "@trmnl-bambulab/core/hosted/store-memory";
+import type { Account, Region } from "@trmnl-bambulab/core/hosted/store";
 
 const NOW = Date.UTC(2026, 7, 24, 12, 0, 0);
 const EMAIL = "owner@example.com";
@@ -55,7 +56,7 @@ interface Harness {
   completed: { region: Region; email: string; code: string }[];
   /** Fails the next Bambu call with this outcome. */
   failWith(failure: { kind: "refused" | "cloud-unavailable" | "no-printers" }): void;
-  listFails(): void;
+  listFails(kind?: "refused" | "cloud-unavailable"): void;
 }
 
 /**
@@ -88,7 +89,7 @@ async function harness(options: { limiter?: RateLimiter } = {}): Promise<Harness
   const sent: { region: Region; email: string }[] = [];
   const completed: { region: Region; email: string; code: string }[] = [];
   let nextFailure: { kind: "refused" | "cloud-unavailable" | "no-printers" } | null = null;
-  let listBroken = false;
+  let listFailure: "refused" | "cloud-unavailable" | null = null;
 
   const ports: EnrolPorts = {
     store,
@@ -115,8 +116,12 @@ async function harness(options: { limiter?: RateLimiter } = {}): Promise<Harness
       return { ok: true, accessToken: `cloud-token-${completed.length}`, printers };
     },
     async printersFor() {
-      if (listBroken) throw new Error("cloud unavailable");
-      return printers;
+      if (listFailure !== null) {
+        const failure = { kind: listFailure, guidance: "safe guidance" };
+        listFailure = null;
+        return { ok: false, failure };
+      }
+      return { ok: true, printers };
     },
     now: NOW,
   };
@@ -133,8 +138,8 @@ async function harness(options: { limiter?: RateLimiter } = {}): Promise<Harness
     failWith(failure) {
       nextFailure = failure;
     },
-    listFails() {
-      listBroken = true;
+    listFails(kind = "cloud-unavailable") {
+      listFailure = kind;
     },
   };
 }
@@ -191,6 +196,10 @@ describe("the whole flow", () => {
     });
     if (session.kind !== "printers") throw new Error("sign-in did not return printers");
     expect(session.printers.map((printer) => printer.name)).toEqual(["Workshop", "Spare"]);
+
+    const listed = await getPrinters(h.ports, h.auth);
+    if (listed.kind !== "printers") throw new Error("stored token did not list printers");
+    expect(listed.printers.map((printer) => printer.name)).toEqual(["Workshop", "Spare"]);
 
     const done = await postPrinters(h.ports, h.auth, {
       deviceIds: [h.printers[1]?.deviceId],
@@ -255,6 +264,7 @@ describe("authentication", () => {
         await postSignInCode(h.ports, header, body),
         await postSession(h.ports, header, body),
         await postPrinters(h.ports, header, body),
+        await getPrinters(h.ports, header),
         await getAccount(h.ports, header),
         await deleteAccount(h.ports, header),
       ];
@@ -277,6 +287,7 @@ describe("authentication", () => {
     const mine = await enrolFully(h);
 
     expect((await getAccount(h.ports, h.otherAuth)).kind).toBe("no-account");
+    expect((await getPrinters(h.ports, h.otherAuth)).kind).toBe("no-account");
     expect((await deleteAccount(h.ports, h.otherAuth)).kind).toBe("no-account");
 
     // Mine is untouched.
@@ -314,6 +325,7 @@ describe("what a route will not say", () => {
       email: EMAIL,
       code: CODE,
     });
+    const printers = await getPrinters(h.ports, h.auth);
     const issued = await postPrinters(h.ports, h.auth, {
       deviceIds: [h.printers[0]?.deviceId],
     });
@@ -321,7 +333,7 @@ describe("what a route will not say", () => {
     const tags = await installationOwnerTags(h.keyring, "any-installation");
     const tag = tags[0] ?? "";
 
-    for (const result of [asked, session, issued, account]) {
+    for (const result of [asked, session, printers, issued, account]) {
       const serialized = JSON.stringify(result);
       expect(serialized).not.toContain("cloud-token");
       expect(serialized).not.toContain(tag);
@@ -390,8 +402,8 @@ describe("the printer picker", () => {
     expect((await postPrinters(h.ports, h.auth, { deviceIds: ["anything"] })).kind).toBe("upstream");
   });
 
-  it("caps the selection at what the display can carry", async () => {
-    const many: DiscoveredPrinter[] = Array.from({ length: 6 }, (_unused, index) => ({
+  it("rejects more than three distinct known printers instead of truncating", async () => {
+    const many: DiscoveredPrinter[] = Array.from({ length: 4 }, (_unused, index) => ({
       deviceId: `${"0".repeat(8)}${index}`,
       name: `Printer ${index}`,
       online: true,
@@ -402,16 +414,55 @@ describe("the printer picker", () => {
     wide.printers.push(...many);
 
     await postSession(wide.ports, wide.auth, { region: "global", email: EMAIL, code: CODE });
-    const done = await postPrinters(wide.ports, wide.auth, {
-      deviceIds: many.map((printer) => printer.deviceId),
+    const refused = await postPrinters(wide.ports, wide.auth, {
+      deviceIds: [
+        many[0]!.deviceId,
+        many[1]!.deviceId,
+        many[0]!.deviceId,
+        many[2]!.deviceId,
+        many[3]!.deviceId,
+      ],
     });
-    expect(done).toEqual({ kind: "done" });
+    expect(refused).toEqual({
+      kind: "invalid",
+      guidance: "Choose no more than 3 printers.",
+    });
 
     const shown = await getAccount(wide.ports, wide.auth);
     if (shown.kind !== "account") throw new Error("the account is not readable");
-    expect(shown.deviceIds.length).toBe(3);
-    // The user's order is kept, because the first printer leads the display.
-    expect(shown.deviceIds).toEqual(many.slice(0, 3).map((printer) => printer.deviceId));
+    expect(shown.deviceIds).toEqual([]);
+  });
+
+  it("stores the visible lead order exactly", async () => {
+    const third: DiscoveredPrinter = {
+      deviceId: `${"0".repeat(8)}CCC`,
+      name: "Third",
+      online: true,
+      model: null,
+    };
+    h.printers.push(third);
+    await postSession(h.ports, h.auth, { region: "global", email: EMAIL, code: CODE });
+    const order = [third.deviceId, h.printers[0]!.deviceId, h.printers[1]!.deviceId];
+
+    expect(await postPrinters(h.ports, h.auth, { deviceIds: order })).toEqual({ kind: "done" });
+    const shown = await getAccount(h.ports, h.auth);
+    if (shown.kind !== "account") throw new Error("the account is not readable");
+    expect(shown.deviceIds).toEqual(order);
+  });
+
+  it("asks for a new code only when the saved token is refused", async () => {
+    const { account } = await enrolFully(h);
+
+    h.listFails("cloud-unavailable");
+    expect((await getPrinters(h.ports, h.auth)).kind).toBe("upstream");
+    expect((await h.store.accountById(account.id))?.reauthRequired).toBe(false);
+
+    h.listFails("refused");
+    expect(await getPrinters(h.ports, h.auth)).toEqual({
+      kind: "reauth-required",
+      guidance: "Your saved Bambu sign-in expired. Sign in again.",
+    });
+    expect((await h.store.accountById(account.id))?.reauthRequired).toBe(true);
   });
 
   it("refuses an empty selection rather than storing one", async () => {

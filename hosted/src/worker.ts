@@ -22,11 +22,16 @@
  * enters the system.
  */
 
-import { importKeyringFromEnv, openToken, type Keyring } from "./crypto.ts";
-import { completeSignIn, discoverPrinters, requestSignInCode } from "./enrol.ts";
+import {
+  importKeyringFromEnv,
+  openToken,
+  type Keyring,
+} from "@trmnl-bambulab/core/hosted/crypto";
+import { completeSignIn, listStoredPrinters, requestSignInCode } from "./enrol.ts";
 import {
   deleteAccount,
   getAccount,
+  getPrinters,
   postPrinters,
   postSession,
   postSignInCode,
@@ -46,8 +51,8 @@ import {
   runDueAccounts,
   type AccountCycleSummary,
 } from "./cycle.ts";
-import { createLogger, type LogDetail } from "./log.ts";
-import { NeonStore } from "./store-neon.ts";
+import { createLogger, type LogDetail } from "@trmnl-bambulab/core/hosted/log";
+import { NeonStore } from "@trmnl-bambulab/core/hosted/store-neon";
 
 /** Enough for three selections or TRMNL's webhook, small enough to bound abuse. */
 const JSON_BODY_LIMIT_BYTES = 8 * 1024;
@@ -139,9 +144,37 @@ export function cycleLogDetail(summary: AccountCycleSummary): LogDetail {
   };
 }
 
-/** Named for the two call sites below; the prefix rule lives in `crypto.ts`. */
-async function keyringFrom(env: Env) {
-  return await importKeyringFromEnv(env as unknown as Record<string, unknown>);
+type KeyringCache = { fingerprint: string; promise: Promise<Keyring> };
+let keyringCache: KeyringCache | null = null;
+
+/**
+ * Reuses imported encryption and tag keys within an isolate. The cache key is a
+ * digest of only the key configuration, so a changed rotation configuration
+ * cannot receive old keys and no raw secret is retained as a lookup key.
+ */
+export async function keyringFrom(env: Env): Promise<Keyring> {
+  const entries = Object.entries(env as unknown as Record<string, unknown>)
+    .filter(
+      ([name, value]) =>
+        (name === "TOKEN_KEY_CURRENT_ID" || name.startsWith("TOKEN_KEY_")) &&
+        typeof value === "string",
+    )
+    .sort(([left], [right]) => left.localeCompare(right));
+  const encoded = new TextEncoder().encode(JSON.stringify(entries));
+  const digest = await crypto.subtle.digest("SHA-256", encoded);
+  const fingerprint = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("");
+
+  if (keyringCache?.fingerprint === fingerprint) return await keyringCache.promise;
+  const promise = importKeyringFromEnv(env as unknown as Record<string, unknown>);
+  keyringCache = { fingerprint, promise };
+  try {
+    return await promise;
+  } catch (error) {
+    if (keyringCache?.promise === promise) keyringCache = null;
+    throw error;
+  }
 }
 
 /** Where a single-use install code is exchanged. TRMNL's, fixed, never ours. */
@@ -431,8 +464,9 @@ async function enrolResponse(request: Request, env: Env, url: URL): Promise<Resp
     requestSignInCode,
     completeSignIn,
     async printersFor(account) {
-      // The token is opened for exactly this call and never held.
-      return await discoverPrinters(account.region, await openToken(keyring, account.id, account.token));
+      // The token is opened for exactly this call and never held or cached.
+      const token = await openToken(keyring, account.id, account.token);
+      return await listStoredPrinters(account.region, token);
     },
     now: Date.now(),
   };
@@ -446,6 +480,8 @@ async function enrolResponse(request: Request, env: Env, url: URL): Promise<Resp
         return routeResponse(await postSession(ports, authorization, body));
       case "POST /v1/enrol/printers":
         return routeResponse(await postPrinters(ports, authorization, body));
+      case "GET /v1/enrol/printers":
+        return routeResponse(await getPrinters(ports, authorization));
       case "GET /v1/account":
         return routeResponse(await getAccount(ports, authorization));
       case "DELETE /v1/account":
@@ -476,6 +512,8 @@ export function routeResponse(result: RouteResult): Response {
       return json({ printers: result.printers }, 200);
     case "account":
       return json({ device_ids: result.deviceIds, reauth_required: result.reauthRequired }, 200);
+    case "reauth-required":
+      return json({ error: result.guidance, reauth_required: true }, 409);
     case "unauthenticated":
       return json({ error: "Sign in again." }, 401);
     case "no-account":

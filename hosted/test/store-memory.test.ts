@@ -7,8 +7,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { MemoryStore } from "../src/store-memory.ts";
-import type { Account, Installation } from "../src/store.ts";
+import { MemoryStore } from "@trmnl-bambulab/core/hosted/store-memory";
+import type { Account, Installation } from "@trmnl-bambulab/core/hosted/store";
 import { ownerTagForTest } from "./helpers.ts";
 
 /**
@@ -68,6 +68,23 @@ describe("MemoryStore", () => {
 
     expect((await store.dueAccounts(2, ANY_RENDER)).map(({ id }) => id)).toEqual([first.id, third.id]);
     expect((await store.dueAccounts(2, ANY_RENDER)).map(({ id }) => id)).toEqual([first.id, third.id]);
+  });
+
+  it("discovers collectable accounts read-only in stable creation order", async () => {
+    const store = new MemoryStore();
+    const first = await store.createAccount(account("collectable-first"));
+    const disabledInput = account("collectable-disabled");
+    disabledInput.deviceIds = [];
+    await store.createAccount(disabledInput);
+    const second = await store.createAccount(account("collectable-second"));
+    const refused = await store.createAccount(account("collectable-refused"));
+    await store.markReauthRequired(refused.id);
+
+    await expect(store.collectableAccounts(10)).resolves.toEqual([first, second]);
+    await expect(store.collectableAccounts(10)).resolves.toEqual([first, second]);
+    // A read-only discovery must not spend the first account's cron turn.
+    expect((await store.dueAccounts(1, ANY_RENDER))[0]?.id).toBe(first.id);
+    await expect(store.collectableAccounts(1)).resolves.toEqual([first]);
   });
 
   it("advances service order so one account cannot stay first forever", async () => {
@@ -285,6 +302,49 @@ describe("MemoryStore", () => {
       store.linkInstallationAccount(unknownId, accountId),
     ).resolves.toBeUndefined();
     await expect(store.installationById(unknownId)).resolves.toBeNull();
+  });
+  it("enforces installation user and account uniqueness while allowing same-row repeats", async () => {
+    const store = new MemoryStore();
+    const first = installation("unique-fields-first");
+    const second = installation("unique-fields-second");
+    const userOne = ["user", "one", crypto.randomUUID()].join("-");
+    const userTwo = ["user", "two", crypto.randomUUID()].join("-");
+    const accountOne = (await store.createAccount(account("linked-one"))).id;
+    const accountTwo = (await store.createAccount(account("linked-two"))).id;
+    await store.createInstallation(first);
+    await store.createInstallation(second);
+
+    await store.recordInstallationUser(first.id, userOne, 10);
+    await store.recordInstallationUser(first.id, userOne, 10);
+    await expect(store.recordInstallationUser(second.id, userOne, 20)).rejects.toThrow(
+      "that user uuid already belongs to an installation",
+    );
+    await store.recordInstallationUser(first.id, userTwo, 11);
+    await expect(store.recordInstallationUser(second.id, userOne, 20)).resolves.toBeUndefined();
+
+    await store.linkInstallationAccount(first.id, accountOne);
+    await store.linkInstallationAccount(first.id, accountOne);
+    await expect(store.linkInstallationAccount(second.id, accountOne)).rejects.toThrow(
+      "that account already belongs to an installation",
+    );
+    await store.linkInstallationAccount(first.id, accountTwo);
+    await expect(store.linkInstallationAccount(second.id, accountOne)).resolves.toBeUndefined();
+
+    const duplicateUser = installation("duplicate-user");
+    duplicateUser.userUuid = userOne;
+    await expect(store.createInstallation(duplicateUser)).rejects.toThrow(
+      "that user uuid already belongs to an installation",
+    );
+    const duplicateAccount = installation("duplicate-account");
+    duplicateAccount.accountId = accountOne;
+    await expect(store.createInstallation(duplicateAccount)).rejects.toThrow(
+      "that account already belongs to an installation",
+    );
+    await store.deleteInstallation(second.id);
+    const recycled = installation("recycled-unique-fields");
+    recycled.userUuid = userOne;
+    recycled.accountId = accountOne;
+    await expect(store.createInstallation(recycled)).resolves.toBeUndefined();
   });
 
   it("deletes an installation row and its token tag lookup", async () => {

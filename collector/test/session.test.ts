@@ -1,8 +1,8 @@
 /**
  * The collector session, driven by a fake broker.
  *
- * The MQTT client is the bridge's own, so these exercise real packet handling
- * over a controlled byte stream rather than a stubbed session. What is under
+ * The MQTT client is the shared core implementation, so these exercise real
+ * packet handling over a controlled byte stream rather than a stubbed session. What is under
  * test is the collector's own decisions: when it writes, what it writes, and
  * what it refuses to do.
  *
@@ -14,9 +14,9 @@
 
 import { describe, expect, it } from "vitest";
 import { RENDER_COALESCE_MS, runAccountSession } from "../src/session.ts";
-import type { ByteStream } from "../../bridge/src/mqtt/client.ts";
-import type { Observation } from "../../bridge/src/types.ts";
-import type { Account, Screen, Store } from "../../hosted/src/store.ts";
+import type { ByteStream } from "@trmnl-bambulab/core/telemetry/mqtt/client";
+import type { Observation } from "@trmnl-bambulab/core/telemetry/types";
+import type { Account, Screen, Store } from "@trmnl-bambulab/core/hosted/store";
 
 const CONNACK_OK = Buffer.from([0x20, 0x02, 0x00, 0x00]);
 const SUBACK_OK = Buffer.from([0x90, 0x03, 0x00, 0x01, 0x00]);
@@ -200,9 +200,9 @@ describe("a live session", () => {
     await session.finished;
 
     const body = JSON.parse(session.writes[0]?.body ?? "{}");
-    // `GET /v1/screen` serves this straight to TRMNL's polling reader, which
-    // wants the variables at the root. An envelope here would also make our
-    // shape differ from the cron's, which is worse than either shape alone.
+    // `/trmnl/markup` reads these stored variables and injects them into the
+    // rendered markup, so they belong at the root. An envelope would also make
+    // the collector's shape differ from the cron's.
     expect(Object.keys(body)).not.toContain("merge_variables");
     expect(Array.isArray(body.printers)).toBe(true);
   });

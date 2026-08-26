@@ -28,7 +28,7 @@ long-lived credential to copy between services.
 
 ## Payload
 
-`bridge/src/types.ts` defines the normalized display payload. The canonical
+`packages/core/src/telemetry/types.ts` defines the normalized display payload. The canonical
 sample is `../bridge/fixtures/merged/printing.synthetic.json`:
 
 ```json

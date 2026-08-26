@@ -16,21 +16,27 @@
  * so the orchestration can be exercised without a broker and without a database.
  */
 
-import { accept, emptyCoordinatorState, snapshotsFor } from "../../bridge/src/coordinator/merge.ts";
-import { buildWebhookPayload } from "../../bridge/src/push/payload.ts";
-import { hostsFor, CLOUD_MQTT_PORT } from "../../bridge/src/providers/bambu-cloud/hosts.ts";
-import { watchCloudMqtt } from "../../bridge/src/providers/cloud-mqtt.ts";
+import {
+  accept,
+  emptyCoordinatorState,
+  snapshotsFor,
+  type CoordinatorState,
+} from "@trmnl-bambulab/core/telemetry/coordinator/merge";
+import { buildWebhookPayload } from "@trmnl-bambulab/core/telemetry/push/payload";
+import {
+  hostsFor,
+  CLOUD_MQTT_PORT,
+} from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/hosts";
+import { watchCloudMqtt } from "@trmnl-bambulab/core/telemetry/providers/cloud-mqtt";
 import {
   systemTimers,
   type ByteStream,
   type SessionEnd,
   type Timers,
-} from "../../bridge/src/mqtt/client.ts";
-import type { CoordinatorState } from "../../bridge/src/coordinator/merge.ts";
-import type { Observation } from "../../bridge/src/types.ts";
-import type { Account, Store } from "../../hosted/src/store.ts";
-
-const UTF8 = new TextEncoder();
+} from "@trmnl-bambulab/core/telemetry/mqtt/client";
+import type { Observation } from "@trmnl-bambulab/core/telemetry/types";
+import type { Account, Store } from "@trmnl-bambulab/core/hosted/store";
+import { serializeScreen } from "@trmnl-bambulab/core/hosted/screen";
 
 /**
  * How long a report is allowed to sit before it becomes a render.
@@ -78,6 +84,8 @@ export interface SessionPorts {
   timers?: Pick<Timers, "once">;
   /** Called after each stored render, for logging that names no printer. */
   onRender?(detail: { bytes: number; printers: number }): void;
+  /** Called once the broker has admitted every subscription. */
+  onSubscribed?(): void;
 }
 
 /**
@@ -91,8 +99,21 @@ export async function runAccountSession(
   account: Account,
   ports: SessionPorts,
 ): Promise<SessionEnd> {
+  let halted = false;
+  void ports.stopped.then(() => {
+    halted = true;
+  });
+  // Do not begin a connection for an account already removed from the selected
+  // set. Promise reactions need one microtask to expose an already-resolved stop.
+  await Promise.resolve();
+  if (halted) return { reason: "closed-by-caller" };
+
   const hosts = hostsFor(account.region);
   const stream = await ports.connect({ host: hosts.mqtt, port: CLOUD_MQTT_PORT });
+  if (halted) {
+    await stream.close().catch(() => undefined);
+    return { reason: "closed-by-caller" };
+  }
 
   // The coordinator persists across reports for the life of this session, which
   // is the whole reason a held connection is worth having: a P1 sends only the
@@ -124,7 +145,6 @@ export async function runAccountSession(
    * still completes, because nothing here can cancel a query in flight, so the
    * bound is at most one further row — not zero.
    */
-  let halted = false;
 
   const render = async (): Promise<void> => {
     pending = false;
@@ -139,25 +159,22 @@ export async function runAccountSession(
       exportJobName: account.exportJobName,
     });
 
-    // Merge variables at the root and nulls dropped, matching what the cron
-    // writes, because `GET /v1/screen` serves whichever of us wrote last and
-    // TRMNL must not see two different shapes.
-    const body = JSON.stringify(payload.variables, (_key, value: unknown) =>
-      value === null ? undefined : value,
+    const serialized = serializeScreen(
+      payload.variables,
+      now,
+      account.maxPayloadBytes,
     );
-    if (body === undefined) return;
-    const bytes = UTF8.encode(body).byteLength;
     // A payload over the account's ceiling is not written at all. Replacing a
     // good render with one TRMNL will refuse would be worse than keeping the
     // older one, which the endpoint already reports the age of.
-    if (bytes > account.maxPayloadBytes) return;
+    if (serialized.kind === "too-large") return;
 
     // Checked again here, and not only on entry: this is the last instant before
     // the row is written, and everything above it was awaited. A halt that
     // arrived meanwhile means a standby owns this row now.
     if (halted) return;
-    await ports.store.writeScreen(account.id, { body, renderedAt: now });
-    ports.onRender?.({ bytes, printers: snapshots.length });
+    await ports.store.writeScreen(account.id, serialized.screen);
+    ports.onRender?.({ bytes: serialized.bytes, printers: snapshots.length });
   };
 
   const beginRender = (): void => {
@@ -225,6 +242,7 @@ export async function runAccountSession(
     deviceIds: account.deviceIds,
     exportJobName: account.exportJobName,
     clientId: ports.clientId,
+    ...(ports.onSubscribed === undefined ? {} : { onSubscribed: ports.onSubscribed }),
     clock: ports.now,
     onObservation: (observation: Observation) => {
       if (halted) return;

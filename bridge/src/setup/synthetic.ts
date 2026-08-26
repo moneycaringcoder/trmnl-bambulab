@@ -10,7 +10,10 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import type { WebhookPayload, WebhookVariables } from "../types.ts";
+import type {
+  WebhookPayload,
+  WebhookVariables,
+} from "@trmnl-bambulab/core/telemetry/types";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 

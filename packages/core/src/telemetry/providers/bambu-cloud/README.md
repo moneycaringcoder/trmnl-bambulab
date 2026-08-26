@@ -32,4 +32,4 @@ Rules that must hold:
 - Read-only means read-only. Nothing here mutates the account or sends a printer
   command.
 
-The I/O half of authentication lives in `../../setup/cloud-session.ts`.
+The I/O half of authentication lives in `bridge/src/setup/cloud-session.ts`.

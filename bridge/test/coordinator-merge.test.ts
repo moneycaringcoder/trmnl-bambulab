@@ -7,13 +7,13 @@ import {
   snapshotsFor,
   unknownPrinterState,
   type CoordinatorState,
-} from "../src/coordinator/merge.ts";
+} from "@trmnl-bambulab/core/telemetry/coordinator/merge";
 import type {
   CapabilitySet,
   Observation,
   PartialPrinterState,
   ProviderId,
-} from "../src/types.ts";
+} from "@trmnl-bambulab/core/telemetry/types";
 
 const KEY = "printer-a";
 const T0 = Date.UTC(2026, 0, 1, 12, 0, 0);

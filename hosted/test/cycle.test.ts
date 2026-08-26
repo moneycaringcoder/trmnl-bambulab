@@ -9,15 +9,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   importKeyring,
-  newScreenKey,
   sealToken,
   type Keyring,
-} from "../src/crypto.ts";
-import { networkDependencies, runCycle, runDueAccounts } from "../src/cycle.ts";
-import { MemoryStore } from "../src/store-memory.ts";
-import type { Account } from "../src/store.ts";
+} from "@trmnl-bambulab/core/hosted/crypto";
+import {
+  MAX_ACCOUNTS_PER_CYCLE,
+  networkDependencies,
+  runCycle,
+  runDueAccounts,
+} from "../src/cycle.ts";
+import { MemoryStore } from "@trmnl-bambulab/core/hosted/store-memory";
+import type { Account } from "@trmnl-bambulab/core/hosted/store";
 import { ownerTagForTest } from "./helpers.ts";
-import { DEVICE_ID } from "../../bridge/test/synthetic-values.ts";
+const DEVICE_ID = `${"0".repeat(12)}A1`;
 
 const NOW = Date.UTC(2026, 7, 24, 12, 0, 0);
 const TOKEN = ["synthetic", "cloud", "token"].join("-");
@@ -88,7 +92,6 @@ interface AccountOptions {
 
 interface CreatedAccount {
   account: Account;
-  screenKey: string;
 }
 
 async function createAccount(
@@ -97,7 +100,6 @@ async function createAccount(
   options: AccountOptions = {},
 ): Promise<CreatedAccount> {
   const id = ["account", options.suffix ?? "one"].join("-");
-  const screenKey = newScreenKey();
   const account = await store.createAccount({
     id,
     ownerTag: ownerTagForTest(),
@@ -107,7 +109,7 @@ async function createAccount(
     maxPayloadBytes: options.maxPayloadBytes ?? 2_000,
     exportJobName: false,
   });
-  return { account, screenKey };
+  return { account };
 }
 
 function parseObject(text: string): Record<string, unknown> {
@@ -256,7 +258,7 @@ describe("runDueAccounts", () => {
   it("returns and stores no plaintext credential or printer identifier", async () => {
     const store = new MemoryStore();
     const keys = await keyring();
-    const { account, screenKey } = await createAccount(store, keys, {
+    const { account } = await createAccount(store, keys, {
       suffix: "private",
     });
     stubCloud();
@@ -272,8 +274,35 @@ describe("runDueAccounts", () => {
     for (const observable of [JSON.stringify(summaries), screen.body]) {
       expect(observable).not.toContain(TOKEN);
       expect(observable).not.toContain(DEVICE_ID);
-      expect(observable).not.toContain(screenKey);
       expect(observable).not.toContain(account.id);
     }
   });
+
+  it.each([16, 75, 200])(
+    "services all %i accounts fairly in bounded batches",
+    async (accountCount) => {
+      const store = new MemoryStore();
+      const keys = await keyring();
+      for (let index = 0; index < accountCount; index += 1) {
+        await createAccount(store, keys, {
+          suffix: `fair-${accountCount}-${String(index).padStart(3, "0")}`,
+        });
+      }
+      stubCloud();
+
+      const seen = new Set<string>();
+      const cycles = Math.ceil(accountCount / MAX_ACCOUNTS_PER_CYCLE);
+      for (let cycle = 0; cycle < cycles; cycle += 1) {
+        const summaries = await runDueAccounts(
+          { store, keyring: keys, ...networkDependencies },
+          { now: NOW + cycle * 60_000 },
+        );
+        expect(summaries.length).toBeLessThanOrEqual(MAX_ACCOUNTS_PER_CYCLE);
+        for (const summary of summaries) seen.add(summary.accountTag);
+      }
+
+      expect(seen.size).toBe(accountCount);
+    },
+    30_000,
+  );
 });

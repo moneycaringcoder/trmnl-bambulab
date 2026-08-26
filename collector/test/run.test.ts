@@ -2,19 +2,21 @@
  * Collector admission, discovery, session isolation, and reconnect backoff.
  *
  * The supervisor tests use injected account loops: no token, cloud, broker, or
- * database is reached. This keeps timing deterministic while pinning the two
- * burst-safety properties — cold starts are spaced and reconnects stay bounded.
+ * database is reached. This keeps reconciliation, replacement ordering, and
+ * handshake admission deterministic.
  */
 
 import { describe, expect, it } from "vitest";
 import {
   ACCOUNT_START_STAGGER_MS,
+  ACCOUNT_HANDSHAKE_CONCURRENCY,
+  accountConfigurationFingerprint,
   backoffMs,
   collectAll,
   type CollectorPorts,
 } from "../src/run.ts";
-import type { Account, Store } from "../../hosted/src/store.ts";
-import type { Keyring } from "../../hosted/src/crypto.ts";
+import type { Account, Store } from "@trmnl-bambulab/core/hosted/store";
+import type { Keyring } from "@trmnl-bambulab/core/hosted/crypto";
 
 /** Full jitter halves the ceiling at worst, so this is the floor of any delay. */
 const FIRST_CEILING = 5_000;
@@ -82,14 +84,14 @@ interface CollectionHarness {
 }
 
 function collectionHarness(
-  dueAccounts: () => Promise<Account[]>,
+  collectableAccounts: (limit: number) => Promise<Account[]>,
   sleep: (ms: number) => Promise<void> = async () => undefined,
 ): CollectionHarness {
   const stopped = Promise.withResolvers<void>();
   let stopping = false;
   return {
     ports: {
-      store: { dueAccounts } as unknown as Store,
+      store: { collectableAccounts } as unknown as Store,
       keyring: {} as Keyring,
       connect: async () => {
         throw new Error("the injected account collector owns this test");
@@ -113,6 +115,32 @@ function collectionHarness(
 }
 
 describe("account supervision", () => {
+  it("fingerprints every session-affecting field deterministically", () => {
+    const base = account("acct-fingerprint");
+    base.deviceIds = ["printer-a", "printer-b"];
+    const fingerprint = accountConfigurationFingerprint(base);
+    expect(
+      accountConfigurationFingerprint({
+        ...base,
+        token: { ...base.token },
+        deviceIds: [...base.deviceIds],
+      }),
+    ).toBe(fingerprint);
+
+    const variants: Account[] = [
+      { ...base, id: `${base.id}-changed` },
+      { ...base, region: "china" },
+      { ...base, token: { ...base.token, keyId: `${base.token.keyId}-changed` } },
+      { ...base, token: { ...base.token, nonce: `${base.token.nonce}-changed` } },
+      { ...base, token: { ...base.token, ciphertext: `${base.token.ciphertext}-changed` } },
+      { ...base, deviceIds: [...base.deviceIds].reverse() },
+      { ...base, maxPayloadBytes: base.maxPayloadBytes + 1 },
+      { ...base, exportJobName: !base.exportJobName },
+      { ...base, reauthRequired: !base.reauthRequired },
+    ];
+    expect(variants.map(accountConfigurationFingerprint)).not.toContain(fingerprint);
+  });
+
   it("discovers a new enrolment while an existing session remains live", async () => {
     const first = account("acct-a");
     const second = account("acct-b");
@@ -141,37 +169,138 @@ describe("account supervision", () => {
     expect([...settled].sort()).toEqual([first.id, second.id].sort());
   });
 
-  it("never grows live sessions beyond the configured account ceiling", async () => {
-    const accounts = [account("acct-a"), account("acct-b"), account("acct-c")];
-    const starts: string[] = [];
+  it("evicts outside the bounded selection before admitting its replacement", async () => {
+    const first = account("acct-a");
+    const retained = account("acct-b");
+    const replacement = account("acct-c");
+    const events: string[] = [];
+    const limits: number[] = [];
     let reads = 0;
-    let discoverySleeps = 0;
+    let active = 0;
+    let peak = 0;
     let test: CollectionHarness;
-    test = collectionHarness(
-      async () => {
-        const account = accounts[reads];
-        reads += 1;
-        return account === undefined ? [] : [account];
-      },
-      async (ms) => {
-        if (ms !== 10) return;
-        discoverySleeps += 1;
-        if (discoverySleeps === 3) test.stop();
-      },
-    );
+    test = collectionHarness(async (limit) => {
+      limits.push(limit);
+      reads += 1;
+      return reads === 1 ? [first, retained] : [retained, replacement];
+    });
 
     await collectAll(
       test.ports,
-      { maxAccounts: 2, rediscoverMs: 10, accountStartStaggerMs: 0 },
+      { maxAccounts: 2, rediscoverMs: 1, accountStartStaggerMs: 0 },
       async (discovered, ports) => {
-        starts.push(discovered.id);
+        active += 1;
+        peak = Math.max(peak, active);
+        events.push(`start:${discovered.id}`);
+        if (discovered.id === replacement.id) test.stop();
         await ports.stopped;
+        events.push(`stop:${discovered.id}`);
+        active -= 1;
       },
     );
 
-    expect(starts).toEqual([accounts[0]?.id, accounts[1]?.id]);
-    expect(reads).toBe(2);
+    expect(limits.every((limit) => limit === 2)).toBe(true);
+    expect(peak).toBeLessThanOrEqual(2);
+    expect(events.indexOf(`stop:${first.id}`)).toBeLessThan(
+      events.indexOf(`start:${replacement.id}`),
+    );
+    expect(events.filter((event) => event === `start:${retained.id}`)).toHaveLength(1);
   });
+
+
+  it("keeps an unchanged session and replaces a changed sealed token without overlap", async () => {
+    const original = account("acct-token");
+    const replacement: Account = {
+      ...original,
+      token: {
+        keyId: "k2",
+        nonce: `${original.token.nonce}-replacement`,
+        ciphertext: `${original.token.ciphertext}-replacement`,
+      },
+    };
+    const events: string[] = [];
+    let reads = 0;
+    let test: CollectionHarness;
+    test = collectionHarness(async () => {
+      reads += 1;
+      if (reads === 1) return [original];
+      if (reads === 2) return [original];
+      return [replacement];
+    });
+
+    await collectAll(
+      test.ports,
+      { maxAccounts: 1, rediscoverMs: 1, accountStartStaggerMs: 0 },
+      async (discovered, ports) => {
+        events.push(`start:${discovered.token.keyId}`);
+        if (discovered.token.keyId === replacement.token.keyId) test.stop();
+        await ports.stopped;
+        events.push(`stop:${discovered.token.keyId}`);
+      },
+    );
+
+    expect(events.filter((event) => event === `start:${original.token.keyId}`)).toHaveLength(1);
+    expect(events.indexOf(`stop:${original.token.keyId}`)).toBeLessThan(
+      events.indexOf(`start:${replacement.token.keyId}`),
+    );
+  });
+
+  it("treats printer order as session configuration and closes before replacement", async () => {
+    const original = account("acct-printers");
+    original.deviceIds = ["printer-a", "printer-b"];
+    const reordered: Account = { ...original, deviceIds: ["printer-b", "printer-a"] };
+    const events: string[] = [];
+    let reads = 0;
+    let test: CollectionHarness;
+    test = collectionHarness(async () => {
+      reads += 1;
+      return reads === 1 ? [original] : [reordered];
+    });
+
+    await collectAll(
+      test.ports,
+      { maxAccounts: 1, rediscoverMs: 1, accountStartStaggerMs: 0 },
+      async (discovered, ports) => {
+        const order = discovered.deviceIds.join(",");
+        events.push(`start:${order}`);
+        if (order === reordered.deviceIds.join(",")) test.stop();
+        await ports.stopped;
+        events.push(`stop:${order}`);
+      },
+    );
+
+    expect(events.indexOf(`stop:${original.deviceIds.join(",")}`)).toBeLessThan(
+      events.indexOf(`start:${reordered.deviceIds.join(",")}`),
+    );
+  });
+
+  it.each(["deleted", "reauth-required", "disabled"])(
+    "stops a session removed from the collectable set because it is %s",
+    async () => {
+      const selected = account("acct-removed");
+      const events: string[] = [];
+      let reads = 0;
+      let test: CollectionHarness;
+      test = collectionHarness(async () => {
+        reads += 1;
+        if (reads === 1) return [selected];
+        if (reads >= 3) test.stop();
+        return [];
+      });
+
+      await collectAll(
+        test.ports,
+        { maxAccounts: 1, rediscoverMs: 1, accountStartStaggerMs: 0 },
+        async (discovered, ports) => {
+          events.push(`start:${discovered.id}`);
+          await ports.stopped;
+          events.push(`stop:${discovered.id}`);
+        },
+      );
+
+      expect(events).toEqual([`start:${selected.id}`, `stop:${selected.id}`]);
+    },
+  );
 
   it("does not let one ended account stop an unrelated live session", async () => {
     const live = account("acct-live");
@@ -241,4 +370,60 @@ describe("account supervision", () => {
 
     expect(starts).toEqual(accounts.map(({ id }) => id));
   });
+
+  it("bounds concurrent handshakes while subscribed sessions stay live", async () => {
+    const accounts = [
+      account("acct-handshake-a"),
+      account("acct-handshake-b"),
+      account("acct-handshake-c"),
+    ];
+    const blockers = new Map(accounts.map(({ id }) => [id, Promise.withResolvers<void>()]));
+    const firstWave = Promise.withResolvers<void>();
+    const thirdAdmission = Promise.withResolvers<void>();
+    let activeHandshakes = 0;
+    let peakHandshakes = 0;
+    let admissions = 0;
+    let test: CollectionHarness;
+    test = collectionHarness(
+      async () => accounts,
+      async (ms) => {
+        if (ms > 0 && ms !== ACCOUNT_START_STAGGER_MS) await test.ports.stopped;
+      },
+    );
+
+    const finished = collectAll(
+      test.ports,
+      {
+        maxAccounts: accounts.length,
+        rediscoverMs: 60_000,
+        accountStartStaggerMs: 0,
+        handshakeConcurrency: ACCOUNT_HANDSHAKE_CONCURRENCY,
+      },
+      async (discovered, ports) => {
+        if (ports.acquireHandshake === undefined) {
+          throw new Error("the collector did not provide its handshake gate");
+        }
+        const release = await ports.acquireHandshake();
+        activeHandshakes += 1;
+        peakHandshakes = Math.max(peakHandshakes, activeHandshakes);
+        admissions += 1;
+        if (admissions === ACCOUNT_HANDSHAKE_CONCURRENCY) firstWave.resolve();
+        if (admissions === accounts.length) thirdAdmission.resolve();
+        await blockers.get(discovered.id)?.promise;
+        activeHandshakes -= 1;
+        release();
+        await ports.stopped;
+      },
+    );
+    await firstWave.promise;
+    expect(admissions).toBe(ACCOUNT_HANDSHAKE_CONCURRENCY);
+    blockers.get(accounts[0]?.id ?? "")?.resolve();
+    await thirdAdmission.promise;
+    expect(peakHandshakes).toBe(ACCOUNT_HANDSHAKE_CONCURRENCY);
+
+    test.stop();
+    for (const blocker of blockers.values()) blocker.resolve();
+    await finished;
+  });
+
 });

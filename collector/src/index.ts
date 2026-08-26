@@ -12,11 +12,11 @@
  */
 
 import { Client } from "@neondatabase/serverless";
-import { openTlsStream } from "../../bridge/src/mqtt/transport-node.ts";
-import { pollCloudHttp } from "../../bridge/src/providers/cloud-http.ts";
-import { importKeyringFromEnv } from "../../hosted/src/crypto.ts";
-import type { LogDetail } from "../../hosted/src/log.ts";
-import { NeonStore } from "../../hosted/src/store-neon.ts";
+import { openTlsStream } from "@trmnl-bambulab/core/telemetry/mqtt/transport-node";
+import { pollCloudHttp } from "@trmnl-bambulab/core/telemetry/providers/cloud-http";
+import { importKeyringFromEnv } from "@trmnl-bambulab/core/hosted/crypto";
+import type { LogDetail } from "@trmnl-bambulab/core/hosted/log";
+import { NeonStore } from "@trmnl-bambulab/core/hosted/store-neon";
 import { takeLease, type LeaseConnection } from "./lease.ts";
 import { EX_CONFIG, supervise, type SupervisePorts } from "./supervise.ts";
 
@@ -58,7 +58,7 @@ type Level = "info" | "warn" | "error";
  * One JSON object per line, which is what a log collector wants and what a
  * person can still read.
  *
- * Detail is restricted to scalars by its type, following `hosted/src/log.ts`:
+ * Detail is restricted to scalars by the shared core log type:
  * handing a logger an arbitrary object is how an account row or a response body
  * reaches a log. Callers still use fixed messages, and an account appears only
  * as `account_tag` — a truncated one-way digest of an account id that is 122

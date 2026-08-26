@@ -7,20 +7,23 @@
  * it has no transport capable of sending anything to a printer or to TRMNL.
  */
 
-import { accept, emptyCoordinatorState, snapshotsFor } from "../../bridge/src/coordinator/merge.ts";
-import { buildWebhookPayload } from "../../bridge/src/push/payload.ts";
+import {
+  accept,
+  emptyCoordinatorState,
+  snapshotsFor,
+} from "@trmnl-bambulab/core/telemetry/coordinator/merge";
+import { buildWebhookPayload } from "@trmnl-bambulab/core/telemetry/push/payload";
 import {
   pollCloudHttp,
   type PollOptions,
   type PollResult,
-} from "../../bridge/src/providers/cloud-http.ts";
-import { hostsFor } from "../../bridge/src/providers/bambu-cloud/hosts.ts";
-import type { ProviderStatus } from "../../bridge/src/types.ts";
-import { openToken, type Keyring } from "./crypto.ts";
-import { accountTag } from "./log.ts";
-import type { Account, Store } from "./store.ts";
-
-const UTF8 = new TextEncoder();
+} from "@trmnl-bambulab/core/telemetry/providers/cloud-http";
+import { hostsFor } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/hosts";
+import type { ProviderStatus } from "@trmnl-bambulab/core/telemetry/types";
+import { openToken, type Keyring } from "@trmnl-bambulab/core/hosted/crypto";
+import { accountTag } from "@trmnl-bambulab/core/hosted/log";
+import type { Account, Store } from "@trmnl-bambulab/core/hosted/store";
+import { serializeScreen } from "@trmnl-bambulab/core/hosted/screen";
 
 export interface CycleDependencies {
   store: Store;
@@ -91,25 +94,20 @@ export async function runCycle(
   // The builder sheds against the larger webhook envelope, so its choices are
   // conservative for this smaller flat form. Polling then puts merge variables
   // at the root; there must be no `merge_variables` envelope for TRMNL to unwrap.
-  const body = JSON.stringify(payload.variables, (_key, value: unknown) =>
-    value === null ? undefined : value,
-  );
-  if (body === undefined) throw new Error("screen payload could not be serialized");
-  const bytes = UTF8.encode(body).byteLength;
-
-  if (bytes > account.maxPayloadBytes) {
+  const serialized = serializeScreen(payload.variables, now, account.maxPayloadBytes);
+  if (serialized.kind === "too-large") {
     return {
       kind: "payload_not_sendable",
       cloud: poll.status,
-      bytes,
+      bytes: serialized.bytes,
     };
   }
 
-  await deps.store.writeScreen(account.id, { body, renderedAt: now });
+  await deps.store.writeScreen(account.id, serialized.screen);
   return {
     kind: "rendered",
     cloud: poll.status,
-    bytes,
+    bytes: serialized.bytes,
   };
 }
 

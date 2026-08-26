@@ -17,12 +17,11 @@
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
-    "zod": "^4.4.3"
+    "@trmnl-bambulab/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
-  },
-  "packageManager": "pnpm@11.13.1"
+  }
 }

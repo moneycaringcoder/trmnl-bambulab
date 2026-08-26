@@ -5,9 +5,9 @@
  * part of the account's hourly budget.
  */
 
-import { hostsFor } from "../providers/bambu-cloud/hosts.ts";
-import { listDevices } from "../providers/bambu-cloud/api.ts";
-import { tokenState } from "../providers/bambu-cloud/token.ts";
+import { hostsFor } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/hosts";
+import { listDevices } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/api";
+import { tokenState } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/token";
 import { describeCloudError } from "./cloud-session.ts";
 import { summarizeConfig, type BridgeConfig } from "./config.ts";
 import { SetupError } from "./errors.ts";

@@ -7,7 +7,7 @@ import {
   beginPasswordLogin,
   type AuthPhase,
   type AuthTransition,
-} from "../src/providers/bambu-cloud/auth.ts";
+} from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/auth";
 import { MQTT_USERNAME, syntheticToken } from "./synthetic-values.ts";
 
 const ACCOUNT = "printer-owner@example.com";

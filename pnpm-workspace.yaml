@@ -1,0 +1,11 @@
+packages:
+  - bridge
+  - hosted
+  - collector
+  - packages/core
+
+# Vitest and Wrangler install native binaries. Keep dependency build policy at
+# the workspace root so every package install observes the same decision.
+allowBuilds:
+  esbuild: true
+  workerd: true

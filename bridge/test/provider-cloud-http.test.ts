@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { healthFrom, pollCloudHttp } from "../src/providers/cloud-http.ts";
-import { hostsFor } from "../src/providers/bambu-cloud/hosts.ts";
+import { healthFrom, pollCloudHttp } from "@trmnl-bambulab/core/telemetry/providers/cloud-http";
+import { hostsFor } from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/hosts";
 import { DEVICE_ID } from "./synthetic-values.ts";
 
 const HOSTS = hostsFor("global");

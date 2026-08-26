@@ -7,7 +7,7 @@ import {
   mqttUsernameFromToken,
   tokenExpiry,
   tokenState,
-} from "../src/providers/bambu-cloud/token.ts";
+} from "@trmnl-bambulab/core/telemetry/providers/bambu-cloud/token";
 import { secondsFrom, syntheticToken } from "./synthetic-values.ts";
 
 const NOW = Date.UTC(2026, 0, 1);

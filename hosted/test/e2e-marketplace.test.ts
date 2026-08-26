@@ -15,8 +15,12 @@
 import { readFileSync } from "node:fs";
 import { neon } from "@neondatabase/serverless";
 import { describe, expect, it } from "vitest";
-import { importKeyringFromEnv, openToken, sealToken } from "../src/crypto.ts";
-import { NeonStore } from "../src/store-neon.ts";
+import {
+  importKeyringFromEnv,
+  openToken,
+  sealToken,
+} from "@trmnl-bambulab/core/hosted/crypto";
+import { NeonStore } from "@trmnl-bambulab/core/hosted/store-neon";
 import {
   identifyInstallation,
   install,

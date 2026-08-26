@@ -10,17 +10,19 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "hosted:key": "node --input-type=module -e \"import('./src/crypto.ts').then(async ({ generateKeyBase64 }) => console.log(await generateKeyBase64()))\""
+    "test:dom": "vitest run test/setup-dom.test.js",
+    "hosted:key": "node --input-type=module -e \"import('@trmnl-bambulab/core/hosted/crypto').then(async ({ generateKeyBase64 }) => console.log(await generateKeyBase64()))\""
   },
   "dependencies": {
-    "@neondatabase/serverless": "^1.1.0",
+    "@trmnl-bambulab/core": "workspace:*",
     "liquidjs": "^10.29.0"
   },
   "devDependencies": {
+    "@neondatabase/serverless": "^1.1.0",
     "@types/node": "^22.10.5",
+    "happy-dom": "^20.11.6",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11",
     "wrangler": "^4.125.0"
-  },
-  "packageManager": "pnpm@11.13.1"
+  }
 }

@@ -309,67 +309,6 @@ export function newAccountId(): string {
   return crypto.randomUUID();
 }
 
-/**
- * Mints a screen key: the bearer capability a user pastes into TRMNL.
- *
- * 256 bits from the CSPRNG, base64url so it survives a URL and a form field
- * without escaping. It is shown to its owner once and never stored; only
- * `screenKeyFingerprint` of it goes in the database, so a leaked dump yields no
- * working keys.
- *
- * Deliberately not the account id. The id is authenticated as this token's
- * additional data, and a value the user carries around and pastes into a third
- * party's form is the last thing that should also be the value binding their
- * ciphertext to their row.
- */
-export function newScreenKey(): string {
-  const raw = crypto.getRandomValues(new Uint8Array(32));
-  let binary = "";
-  for (const byte of raw) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-}
-
-/**
- * The exact width of a minted screen key: 32 bytes as unpadded base64url.
- *
- * Exported so the shape check and the minting cannot drift apart.
- */
-export const SCREEN_KEY_LENGTH = 43;
-
-/**
- * Whether a presented value could possibly be one of our keys.
- *
- * Worth having because it costs nothing and saves a database round trip. A
- * scanner throwing arbitrary strings at the endpoint never reaches Postgres,
- * which removes the cheapest way to make us pay for someone else's traffic.
- *
- * This is a shape test and not an authentication decision: a value that passes
- * is still looked up, so passing proves nothing. What it does reveal, to be
- * precise about it, is the key *format* -- a caller can tell a well-formed
- * guess from junk by latency, and plainly so when the database is down, where a
- * well-formed key answers 503 and junk answers 404. The format is public
- * anyway, being documented and visible to every key holder. Key *validity* is
- * not revealed by this check, and the endpoint answers one identical 404 to
- * every refusal a caller can provoke. The one exception is not caller-reachable:
- * a database fault after a key resolves surfaces as a 503.
- */
-export function looksLikeScreenKey(value: string): boolean {
-  return value.length === SCREEN_KEY_LENGTH && /^[A-Za-z0-9_-]+$/.test(value);
-}
-
-/**
- * The stored form of a screen key: SHA-256, hex.
- *
- * A plain hash rather than a password KDF, and that is the right call here
- * rather than a shortcut. A KDF exists to make guessing a *low-entropy* secret
- * expensive. This secret is 256 random bits, so guessing is already impossible,
- * and a slow hash on a path TRMNL calls on every screen refresh would buy
- * nothing and cost latency on every request.
- */
-export async function screenKeyFingerprint(key: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key.trim()));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
 
 /**
  * Generates a key to paste into `wrangler secret put`.

@@ -36,14 +36,12 @@ nothing usable. Device ids are printer identifiers; we never log them.
 
 ## Install and check
 
-Node 22.18 or newer is required. From the repository root, enable Corepack and
-install both package trees: the hosted tier imports shared bridge modules from
-source.
+Node 22.18 or newer is required. From the repository root, enable Corepack,
+install the single workspace, then address the hosted package directly:
 
 ```sh
 corepack enable
-pnpm --dir bridge install --frozen-lockfile
-pnpm --dir hosted install --frozen-lockfile
+pnpm install --frozen-lockfile
 pnpm --dir hosted typecheck
 pnpm --dir hosted test
 ```
@@ -93,8 +91,8 @@ nothing to attach a secret to. The first deploy therefore supplies secrets from
 the same file format used for local development:
 
 ```sh
-cp .dev.vars.example .dev.vars
-pnpm exec wrangler deploy --secrets-file .dev.vars
+cp hosted/.dev.vars.example hosted/.dev.vars
+pnpm --dir hosted exec wrangler deploy --secrets-file .dev.vars
 ```
 
 Fill `DATABASE_URL` and `TOKEN_KEY_K1` through your approved secret-management
@@ -107,17 +105,17 @@ Once the Worker exists, set or replace one secret at a time through Wrangler's
 prompt, which keeps the value out of shell history and process arguments:
 
 ```sh
-pnpm exec wrangler secret put DATABASE_URL
+pnpm --dir hosted exec wrangler secret put DATABASE_URL
 ```
 
 Generate a key with Web Crypto and send it directly to Wrangler without writing
 it to a file or placing it in a process argument:
 
 ```sh
-pnpm --silent hosted:key | pnpm exec wrangler secret put TOKEN_KEY_K1
+pnpm --dir hosted --silent hosted:key | pnpm --dir hosted exec wrangler secret put TOKEN_KEY_K1
 ```
 
-`pnpm hosted:key` prints a fresh key when you need to transfer it through an
+`pnpm --dir hosted hosted:key` prints a fresh key when you need to transfer it through an
 approved secret manager. Treat that output as a production credential: do not
 paste it into chat, tickets, logs, shell arguments, environment examples, or
 Git. Cloudflare Worker secrets are the key-management boundary; Neon holds only
@@ -139,7 +137,7 @@ Rotation is additive so old rows remain readable:
 1. Generate and install a new secret without removing the old one:
 
    ```sh
-   pnpm --silent hosted:key | pnpm exec wrangler secret put TOKEN_KEY_K2
+   pnpm --dir hosted --silent hosted:key | pnpm --dir hosted exec wrangler secret put TOKEN_KEY_K2
    ```
 
 2. Keep both `TOKEN_KEY_K1` and `TOKEN_KEY_K2` configured, change `TOKEN_KEY_CURRENT_ID` to `k2`, and deploy the Worker through your normal reviewed process.

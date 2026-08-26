@@ -3,8 +3,8 @@ import {
   buildWebhookPayload,
   type PayloadOptions,
   type PayloadResult,
-} from "../src/push/payload.ts";
-import type { DisplayState, Snapshot } from "../src/types.ts";
+} from "@trmnl-bambulab/core/telemetry/push/payload";
+import type { DisplayState, Snapshot } from "@trmnl-bambulab/core/telemetry/types";
 import { DEVICE_ID } from "./synthetic-values.ts";
 
 const NOW = Date.UTC(2026, 0, 1, 12, 34, 56);

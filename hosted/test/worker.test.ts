@@ -1,5 +1,11 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import worker, { cycleLogDetail, routeResponse, safeTrmnlCallback } from "../src/worker.ts";
+import worker, {
+  cycleLogDetail,
+  keyringFrom,
+  routeResponse,
+  safeTrmnlCallback,
+} from "../src/worker.ts";
 import type { RouteResult } from "../src/routes.ts";
 import type { AccountCycleSummary } from "../src/cycle.ts";
 
@@ -101,6 +107,7 @@ describe("routeResponse", () => {
       [{ kind: "done" }, 204],
       [{ kind: "printers", printers: [] }, 200],
       [{ kind: "account", deviceIds: [], reauthRequired: false }, 200],
+      [{ kind: "reauth-required", guidance: "g" }, 409],
       [{ kind: "unauthenticated" }, 401],
       [{ kind: "no-account" }, 404],
       [{ kind: "throttled" }, 429],
@@ -115,16 +122,97 @@ describe("routeResponse", () => {
     }
   });
 
+  it("marks a refused stored cloud token without returning a credential", async () => {
+    const response = routeResponse({
+      kind: "reauth-required",
+      guidance: "Your saved sign-in expired.",
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "Your saved sign-in expired.",
+      reauth_required: true,
+    });
+  });
+
   it("never caches an authenticated answer", () => {
     const results: RouteResult[] = [
       { kind: "done" },
       { kind: "account", deviceIds: [], reauthRequired: false },
+      { kind: "reauth-required", guidance: "g" },
       { kind: "unauthenticated" },
       { kind: "throttled" },
     ];
     for (const result of results) {
       expect(routeResponse(result).headers.get("Cache-Control")).toBe("no-store");
     }
+  });
+});
+
+describe("keyring reuse", () => {
+  it("memoizes derivation by key configuration without reusing changed keys", async () => {
+    const firstConfig = {
+      TOKEN_KEY_CURRENT_ID: "k1",
+      TOKEN_KEY_K1: Buffer.alloc(32, 1).toString("base64"),
+    } as unknown as Env;
+    const sameConfig = {
+      TOKEN_KEY_CURRENT_ID: "k1",
+      TOKEN_KEY_K1: Buffer.alloc(32, 1).toString("base64"),
+    } as unknown as Env;
+    const rotatedConfig = {
+      TOKEN_KEY_CURRENT_ID: "k2",
+      TOKEN_KEY_K1: Buffer.alloc(32, 1).toString("base64"),
+      TOKEN_KEY_K2: Buffer.alloc(32, 2).toString("base64"),
+    } as unknown as Env;
+
+    const first = await keyringFrom(firstConfig);
+    expect(await keyringFrom(sameConfig)).toBe(first);
+    expect(await keyringFrom(rotatedConfig)).not.toBe(first);
+  });
+});
+
+describe("static setup security", () => {
+  it("uses same-origin files under a CSP that needs no inline or Google resources", async () => {
+    const [index, help, setupCss, helpCss, headers] = await Promise.all([
+      readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+      readFile(new URL("../public/help.html", import.meta.url), "utf8"),
+      readFile(new URL("../public/setup.css", import.meta.url), "utf8"),
+      readFile(new URL("../public/help.css", import.meta.url), "utf8"),
+      readFile(new URL("../public/_headers", import.meta.url), "utf8"),
+    ]);
+
+    expect(index).toContain('src="/boot.js"');
+    expect(index).toContain('href="/setup.css"');
+    expect(index).not.toMatch(/<style\b/);
+    expect(index).not.toMatch(/<script(?![^>]*\bsrc=)/);
+    expect(`${index}\n${help}\n${setupCss}\n${helpCss}`).not.toMatch(
+      /fonts\.(?:googleapis|gstatic)/,
+    );
+    expect(help).not.toMatch(/<style\b/);
+    expect(headers).toContain("script-src 'self'");
+    expect(headers).toContain("style-src 'self'");
+    expect(headers).toContain("Referrer-Policy: no-referrer");
+    expect(headers).toContain("Permissions-Policy:");
+    expect(headers).toContain("X-Content-Type-Options: nosniff");
+    expect(headers).toContain("frame-ancestors 'none'");
+    expect(headers).not.toContain("'unsafe-inline'");
+    expect(headers).toMatch(/\/index\.html\n\s+X-Robots-Tag: noindex/);
+    expect(headers).not.toMatch(/\/help(?:\.html)?\n\s+X-Robots-Tag: noindex/);
+    expect(headers).toMatch(/\n\/\n\s+X-Robots-Tag: noindex/);
+  });
+
+  it("serializes a printer list without cloud credentials", async () => {
+    const secret = ["cloud", "token", "must", "not", "leak"].join("-");
+    const response = routeResponse({
+      kind: "printers",
+      printers: [{ deviceId: "known-device", name: "Workshop", online: true, model: null }],
+    });
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).toContain("Workshop");
+    expect(body).not.toContain(secret);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
   });
 });
 

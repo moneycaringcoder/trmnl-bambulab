@@ -27,6 +27,11 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    ignore:
+      # Production and CI support Node 22 and 24, but the collector image stays
+      # on the Node 22 LTS line. Accept patch/minor image updates, not Node majors.
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"

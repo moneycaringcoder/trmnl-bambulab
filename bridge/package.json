@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@trmnl-bambulab/core": "workspace:*",
-    "zod": "^4.4.3"
+    "zod": "^4.5.1"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.11",

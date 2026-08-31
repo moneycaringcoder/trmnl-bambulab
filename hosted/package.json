@@ -20,9 +20,9 @@
   "devDependencies": {
     "@neondatabase/serverless": "^1.1.0",
     "@types/node": "^22.10.5",
-    "happy-dom": "^20.11.6",
+    "happy-dom": "^20.11.13",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11",
-    "wrangler": "^4.125.0"
+    "wrangler": "^4.127.1"
   }
 }
